@@ -1,0 +1,26 @@
+:root {
+    --docz-color-background: #222;
+    --docz-color-foreground: #fff;
+    --docz-color-primary: #936;
+}
+
+html.docz {
+    background-color: var(--docz-color-background);
+    color: var(--docz-color-foreground);
+}
+
+html.docz > body {
+    font-family: monospace;
+    margin: unset;
+}
+
+html.docz > body h1,
+html.docz > body h2,
+html.docz > body h3,
+html.docz > body h4,
+html.docz > body h5,
+html.docz > body h6,
+html.docz > body p {
+    line-height: 1;
+    margin: unset;
+}
