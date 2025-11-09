@@ -1,0 +1,50 @@
+html.docz .docz-previews {
+    max-height: 0;
+    overflow-y: scroll;
+    scrollbar-width: none;
+    transition: max-height 0.5s;
+}
+
+html.docz .docz-preview {
+    animation: docz-fade-in 0.5s;
+    background-color: var(--docz-color-disabled);
+    border-radius: var(--docz-border-radius);
+    padding: 1em;
+    position: relative;
+    transition: background-color 1s;
+    width: fit-content;
+}
+
+html.docz .docz-preview > embed {
+    animation: docz-fade-in 0.5s 0.75s forwards;
+    border-radius: calc(var(--docz-border-radius) * 0.5);
+    height: min(33vw, 33vh);
+    opacity: 0;
+}
+
+html.docz .docz-preview > button {
+    background-color: var(--docz-color-destroy);
+    right: 0;
+    margin: initial !important;
+    border: 0.33em solid var(--docz-color-disabled);
+    padding: calc(var(--docz-padding-element) * 0.5) !important;
+    position: absolute;
+    top: 0;
+    transform: translate(-15%, 15%);
+}
+
+html.docz .docz-preview[data-category="1"] {
+    background-color: var(--docz-color-category-sensitive);
+}
+
+html.docz .docz-preview[data-category="2"] {
+    background-color: var(--docz-color-category-confidential);
+}
+
+html.docz .docz-preview[data-category="3"] {
+    background-color: var(--docz-color-category-public);
+}
+
+html.docz .docz-preview[data-category="4"] {
+    background-color: var(--docz-color-category-unsafe);
+}

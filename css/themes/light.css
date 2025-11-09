@@ -1,0 +1,9 @@
+html.docz[data-theme="light"] {
+    --docz-color-background: #fff !important;
+    --docz-color-foreground: #111 !important;
+    --docz-color-primary: #69c !important;
+}
+
+html.docz[data-theme="light"] > body main > img:last-child {
+    filter: invert() hue-rotate(180deg);
+}

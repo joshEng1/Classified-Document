@@ -1,7 +1,33 @@
+@import url("animations.css");
+@import url("button.css");
+@import url("previews.css");
+@import url("sections.css");
+@import url("select.css");
+@import url("textarea.css");
+@import url("themes/light.css");
+@import url("dev.css"); /* temp */
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:ital,wght@0,100..700;1,100..700&display=swap');
+
 :root {
-    --docz-color-background: #222;
+    --docz-color-background: #111;
     --docz-color-foreground: #fff;
-    --docz-color-primary: #936;
+    --docz-color-primary: #369;
+    --docz-color-disabled: #333;
+    --docz-color-destroy: #a33;
+
+    --docz-color-category-sensitive: #a33;
+    --docz-color-category-confidential: #14a;
+    --docz-color-category-public: #396;
+    --docz-color-category-unsafe: #d66;
+
+    --docz-border-radius: 2em;
+    --docz-padding-section: 3em;
+    --docz-padding-element: 1em;
+}
+
+::selection {
+    background-color: var(--docz-color-foreground);
+    color: var(--docz-color-primary);
 }
 
 html.docz {
@@ -10,7 +36,7 @@ html.docz {
 }
 
 html.docz > body {
-    font-family: monospace;
+    font-family: "Roboto Mono", monospace;
     margin: unset;
 }
 
@@ -23,4 +49,56 @@ html.docz > body h6,
 html.docz > body p {
     line-height: 1;
     margin: unset;
+}
+
+html.docz > body img {
+    pointer-events: none;
+    user-select: none;
+}
+
+html.docz .docz-center {
+    margin-left: auto;
+    margin-right: auto;
+}
+
+html.docz .docz-center-frame > * {
+    margin-left: auto;
+    margin-right: auto;
+    text-align: center;
+    width: fit-content;
+}
+
+html.docz .docz-flex {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+html.docz .docz-flex > * {
+    margin: 1em !important;
+}
+
+/*  */
+
+html.docz > body main section {
+    overflow: hidden;
+    padding: var(--docz-padding-section);
+    position: relative;
+    z-index: 0;
+}
+
+html.docz > body main section *:not(:first-child) {
+    margin-top: 1em;
+}
+
+html.docz > body main > img:last-child {
+    height: 100%;
+    left: 0;
+    margin: unset;
+    object-fit: cover;
+    position: absolute;
+    top: 0;
+    width: 100%;
+    z-index: -1;
 }
