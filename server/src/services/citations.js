@@ -2,7 +2,7 @@
 // Otherwise, chunk by average length per page.
 
 export function mapCitations({ text, evidence, meta }) {
-  const pages = splitPages(text);
+  const pages = splitPages(text, meta);
   const mapLineToPage = indexLines(pages);
 
   function citeLine(line) {
@@ -20,14 +20,26 @@ export function mapCitations({ text, evidence, meta }) {
   return cited;
 }
 
-function splitPages(text) {
-  if (!text) return [''];
-  // Try form feed page breaks first
-  let parts = text.split('\f');
-  if (parts.length === 1) {
-    // Fallback: split every N lines if numpages in meta not known
-    parts = text.split(/\r?\n\r?\n(?=\r?\n)/g); // coarse chunks
+function splitPages(text, meta) {
+  if (!text) return [['']];
+  // Prefer explicit page breaks
+  if (text.includes('\f')) {
+    return text.split('\f').map(p => p.split(/\r?\n/).map(s => s.trim()).filter(Boolean));
   }
+  const num = Number(meta?.pages || 0);
+  if (num && num > 1) {
+    // Evenly chunk by character length when page breaks are missing
+    const len = text.length;
+    const per = Math.max(1, Math.floor(len / num));
+    const arr = [];
+    for (let i = 0; i < num; i++) {
+      const slice = text.slice(i * per, i === num - 1 ? undefined : (i + 1) * per);
+      arr.push(slice.split(/\r?\n/).map(s => s.trim()).filter(Boolean));
+    }
+    return arr;
+  }
+  // Coarse fallback
+  const parts = text.split(/\r?\n\r?\n(?=\r?\n)/g);
   return parts.map(p => p.split(/\r?\n/).map(s => s.trim()).filter(Boolean));
 }
 
@@ -59,4 +71,3 @@ function jaccard(a, b) {
   const uni = sa.size + sb.size - inter;
   return uni ? inter / uni : 0;
 }
-

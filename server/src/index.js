@@ -92,7 +92,7 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
     if (localEngine === 'llama') {
       const llamaUrl = process.env.LLAMA_URL || 'http://localhost:8080';
       const cls = await classifyWithLlama(prompts.classifier, llamaUrl);
-      const label = cls?.label || cls?.Label || 'Other';
+      const label = extractLabel(cls) || 'Other';
       const conf = Number(process.env.LOCAL_DEFAULT_CONF || '0.92');
       local = { label, confidence: conf, engine: 'llama', raw: cls };
       // Update candidate for verifier
@@ -141,8 +141,13 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
         }
       }
 
-      if (verifier?.verdict === 'yes' && local.confidence >= (Number(process.env.ROUTE_LOW) || 0.5)) {
-        finalLabel = local.label;
+      // Prefer the classifier label returned by the verifier if available
+      const vClassifier = (verifier?.classifier) || (verifier?.openai?.classifier) || (verifier?.llama?.classifier);
+      const vLabel = vClassifier ? extractLabel(vClassifier) : null;
+      if (vLabel) finalLabel = vLabel;
+
+      // Acceptance based on verifier verdict when routed
+      if (verifier?.verdict === 'yes') {
         accepted = true;
         acceptedReason = 'verifier_yes';
       } else {
@@ -260,11 +265,39 @@ async function fetchLikeProcess(filePath, originalName) {
   };
 }
 
+// HITL feedback endpoint: save SME feedback locally for later analysis
+const feedbackDir = path.join(__dirname, '../../feedback');
+try { fs.mkdirSync(feedbackDir, { recursive: true }); } catch {}
+
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const ts = Date.now();
+    const outPath = path.join(feedbackDir, `feedback_${ts}.json`);
+    fs.writeFileSync(outPath, JSON.stringify(body, null, 2));
+    res.json({ ok: true, path: outPath });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 function requirePIIRedaction(req) {
-  const s = String(process.env.REDact_PII || process.env.REDACT_PII || 'true').toLowerCase();
-  const override = typeof req?.body?.redact_piI !== 'undefined' ? String(req.body.redact_piI).toLowerCase() : null;
+  const s = String(process.env.REDACT_PII || 'true').toLowerCase();
+  const override = typeof req?.body?.redact_pii !== 'undefined' ? String(req.body.redact_pii).toLowerCase() : null;
   const val = override ?? s;
   return val === 'true' || val === '1' || val === 'yes';
+}
+
+function extractLabel(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  // Common keys from various models
+  const keys = ['label', 'Label', 'classification', 'class', 'category', 'Category', 'predicted_label', 'predicted_class'];
+  for (const k of keys) {
+    if (typeof obj[k] === 'string' && obj[k].trim()) return obj[k].trim();
+  }
+  // Some models wrap answer within a field like { result: { label: ... } }
+  if (obj.result) return extractLabel(obj.result);
+  return null;
 }
 
 app.use(express.static(path.join(__dirname, '../../web')));

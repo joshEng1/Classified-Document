@@ -3,12 +3,16 @@ services:
   docling:
     build: ./docling-service
     network_mode: "host"
+    ports:
+      - "7000:7000"
     restart: unless-stopped
   server:
     build:
       context: .
       dockerfile: server/Dockerfile
     network_mode: "host"
+    ports:
+      - "5055:5055"
     environment:
       - PORT=5055
       - VERIFIER_ENGINE=${VERIFIER_ENGINE:-llama}
