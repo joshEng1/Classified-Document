@@ -1,0 +1,57 @@
+{
+  "system_classifier": "You are an expert document classification system with deep understanding of business document types. Analyze the provided evidence carefully and classify the document into exactly ONE category.\n\nCRITICAL DISTINCTION: An Internal Memo MUST have explicit To:/From:/Date:/Subject: headers addressing specific recipients. If these headers are absent, it is NOT an Internal Memo - even if the content discusses internal business topics. Marketing documents about corporate solutions are NOT memos.\n\nYour classification must be based ONLY on the evidence provided - do not make assumptions. Return valid JSON only.",
+  "system_verifier": "You are a strict verification system that validates document classifications. Your job is to check if the proposed classification is supported by the evidence. Look for contradictions or missing critical features. Return valid JSON with your verdict (yes/no), contradictions found, and brief rationale. Base your decision ONLY on the evidence provided.",
+  "rules": {
+    "Public Marketing Document": [
+      "REQUIRED: Product/service promotional content describing features, benefits, capabilities, or solutions",
+      "REQUIRED: Company branding with copyright notices, trademarks, or corporate identity marks",
+      "REQUIRED: Professional polished tone targeting external audiences (customers, prospects, partners, public)",
+      "TYPICAL: Contact information for sales/support (phone numbers, websites, email addresses)",
+      "TYPICAL: Solution/product names, value propositions, use cases, or customer benefits",
+      "TYPICAL: Multi-column layouts, professional graphics, or marketing design elements",
+      "KEY DISTINCTION: Content is designed to PROMOTE or INFORM external parties about products/services",
+      "EXCLUDE: Must NOT have explicit memo headers (To:/From:/Date:/Subject: format)",
+      "EXCLUDE: Must NOT have billing details, invoice numbers, payment terms, or line-item charges",
+      "EXCLUDE: Must NOT have employment application fields (position applied, work history, references)",
+      "EXCLUDE: Must NOT be internal-only communications or policy updates"
+    ],
+    "Internal Memo": [
+      "REQUIRED: Explicit memo structure with To:/From:/Date:/Subject: or RE:/CC:/BCC: headers",
+      "REQUIRED: Named recipients (specific employees, departments, or distribution lists)",
+      "REQUIRED: Internal organizational tone addressing colleagues about policies, updates, or directives",
+      "KEY DISTINCTION: Document is addressed TO specific internal recipients FROM specific sender(s)",
+      "TYPICAL: Business communication about internal operations, policies, announcements, or procedures",
+      "TYPICAL: Lacks external marketing polish - functional formatting rather than promotional design",
+      "EXCLUDE: Must NOT be external marketing collateral or sales materials",
+      "EXCLUDE: Must NOT have billing/invoice details or payment information",
+      "EXCLUDE: Must NOT have employment application fields",
+      "EXCLUDE: Must NOT be product brochures or promotional materials for external audiences"
+    ],
+    "Employee Application": [
+      "REQUIRED: Form fields for applicant information (name, address, phone, email)",
+      "REQUIRED: Employment-specific fields (position applied for, desired salary, availability)",
+      "REQUIRED: Work history section (previous employers, dates, job titles, responsibilities)",
+      "TYPICAL: Education section (schools, degrees, dates)",
+      "TYPICAL: References section (names, contact info, relationship)",
+      "TYPICAL: Signature and date fields for applicant declaration",
+      "EXCLUDE: Must NOT be promotional marketing content",
+      "EXCLUDE: Must NOT be invoices or financial documents"
+    ],
+    "Invoice": [
+      "REQUIRED: Invoice number or billing document identifier",
+      "REQUIRED: Currency amounts with line items showing quantities, prices, and totals",
+      "REQUIRED: Vendor/seller information (name, address, contact)",
+      "REQUIRED: Bill-to/customer information",
+      "TYPICAL: Payment terms, due date, or payment instructions",
+      "TYPICAL: Itemized list of products/services with individual costs",
+      "EXCLUDE: Must NOT be marketing collateral or promotional content",
+      "EXCLUDE: Must NOT be employment applications or internal memos"
+    ],
+    "Other": [
+      "Use ONLY if document does not clearly fit any of the above categories",
+      "Use if evidence is insufficient to make a confident classification",
+      "Use for mixed-type documents that span multiple categories",
+      "Use for document types not covered above (reports, manuals, forms, etc.)"
+    ]
+  }
+}

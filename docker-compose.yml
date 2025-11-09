@@ -1,0 +1,26 @@
+version: "3.8"
+services:
+  docling:
+    build: ./docling-service
+    network_mode: "host"
+    restart: unless-stopped
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    network_mode: "host"
+    environment:
+      - PORT=5055
+      - VERIFIER_ENGINE=${VERIFIER_ENGINE:-llama}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # With host networking, can use localhost directly
+      - LLAMA_URL=${LLAMA_URL:-http://localhost:8080}
+      - DOCLING_URL=http://localhost:7000
+      - ROUTE_LOW=${ROUTE_LOW:-0.5}
+      - AUTO_ACCEPT=${AUTO_ACCEPT:-0.9}
+      - LOCAL_CLASSIFIER=${LOCAL_CLASSIFIER:-llama}
+      - VERIFY_SECOND_PASS=${VERIFY_SECOND_PASS:-true}
+      - LOCAL_DEFAULT_CONF=${LOCAL_DEFAULT_CONF:-0.92}
+    depends_on:
+      - docling
+    restart: unless-stopped
