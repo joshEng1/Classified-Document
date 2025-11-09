@@ -67,6 +67,9 @@ const docz = {
     }),
 
     typewrite: ((element, value, timeout, i = 0) => {
+        if (!value[i]) {
+            return;
+        }
         element.innerHTML += value[i++];
         if (i !== value.length) {
             setTimeout(() => {
@@ -375,13 +378,13 @@ const docz = {
                 docz._feedback_buttons_added = true;
                 const buttons = document.createElement("div");
                 buttons.className = "docz-flex";
-                const button_yes = document.createElement("button");
-                button_yes.innerText = "CORRECT";
-                buttons.appendChild(button_yes);
-                const button_no = document.createElement("button");
-                button_no.innerText = "WRONG";
-                buttons.appendChild(button_no);
-                docz.chat.appendChild(buttons);
+                // const button_yes = document.createElement("button");
+                // button_yes.innerText = "CORRECT";
+                // buttons.appendChild(button_yes);
+                // const button_no = document.createElement("button");
+                // button_no.innerText = "WRONG";
+                // buttons.appendChild(button_no);
+                // docz.chat.appendChild(buttons);
             }
             return;
         }

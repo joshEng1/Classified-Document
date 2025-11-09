@@ -302,8 +302,8 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
         send('chunk_pii', chunkPiiData);
       }
 
-      // Only show summary if not unsafe or policy allows showing with mask
-      send('slm', { id: ch.id, summary: summ.summary, key_phrases: summ.key_phrases, error: summ.error });
+      // DON'T send SLM summary to reduce noise
+      // send('slm', { id: ch.id, summary: summ.summary, key_phrases: summ.key_phrases, error: summ.error });
       completed++;
       send('progress', { completed, total: chunks.length });
     }
