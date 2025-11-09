@@ -1,0 +1,9 @@
+html.docz > body select {
+    border: none;
+    border-radius: var(--docz-border-radius);
+    padding: calc(var(--docz-padding-element) * 0.5) var(--docz-padding-element);
+}
+
+html.docz > body select:not(:disabled):hover {
+    cursor: pointer;
+}
