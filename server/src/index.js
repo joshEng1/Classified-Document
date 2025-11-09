@@ -12,9 +12,13 @@ import { verifyWithOpenAI } from './services/verifier/gptVerifier.js';
 import { verifyWithLlama, classifyWithLlama } from './services/verifier/llamaVerifier.js';
 import { redactPII } from './util/redact.js';
 import { detectPII } from './services/pii/detectPII.js';
+import { detectPII as detectPIIRobust, detectPIIFromBlocks, summarizePII, formatPIIEvidence, generateRedactionSuggestions } from './services/pii/piiDetector.js';
 import { assessSafety } from './services/safety/safety.js';
 import { classifyPolicy } from './services/policy/policyClassifier.js';
 import { detectEquipment } from './services/detectors/equipment.js';
+import { chunkDocument } from './services/chunker.js';
+import { summarizeChunk } from './services/slm/slmClient.js';
+import { moderateText } from './services/moderation/guardian.js';
 
 // Resolve current file/dir for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -202,6 +206,193 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
   }
 });
 
+// Streaming pipeline: Upload → Docling convert → Chunker → SLM + Guardian (per chunk) → Final policy
+app.post('/api/process-stream', upload.single('file'), async (req, res) => {
+  // SSE headers over POST: supported by fetch streaming readers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const send = (event, data) => {
+    try {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch { }
+  };
+
+  try {
+    const filePath = req.file ? req.file.path : null;
+    const docPath = req.body.document_path || (req.file ? req.file.originalname : undefined);
+    if (!filePath && !req.body.text) {
+      send('error', { error: 'No file or text provided' });
+      return res.end();
+    }
+
+    // 1) Extract
+    send('status', { phase: 'extract_start' });
+    const extraction = await extractDocument({
+      filePath,
+      originalName: req.file?.originalname,
+      providedText: req.body.text,
+      preferDocling: true,
+    });
+    send('extract', { meta: extraction.meta, status: extraction.status });
+
+    // Pre-checks
+    send('precheck', {
+      pages: extraction.meta.pages || 0,
+      images: extraction.meta.images || 0,
+      legibility: {
+        hasText: extraction.meta.hasText,
+        avgCharsPerPage: extraction.meta.avgCharsPerPage,
+        isLikelyScanned: extraction.meta.isLikelyScanned,
+      },
+    });
+
+    // 2) Chunker
+    send('status', { phase: 'chunk_start' });
+    const chunks = chunkDocument(extraction.text || '', extraction.meta, { maxChars: 1600, minChars: 600 });
+    send('chunk_index', { total: chunks.length });
+
+    // 3) Per-chunk SLM + Guardian + PII detection, process sequentially for ordered output
+    const guardianUrl = process.env.GUARDIAN_URL || process.env.LLAMA_URL || 'http://localhost:8080';
+    const slmUrl = process.env.SLM_URL || process.env.LLAMA_URL || 'http://localhost:8080';
+    let completed = 0;
+
+    // Process chunks sequentially to maintain order
+    for (const ch of chunks) {
+      console.log(`\n=== PROCESSING CHUNK ${ch.id} ===`);
+      console.log(`Chunk text length: ${ch.text?.length || 0}`);
+      console.log(`Chunk page: ${ch.page}`);
+      console.log(`Chunk text preview: ${ch.text?.substring(0, 200)}...`);
+
+      // Fire all three operations in parallel for this chunk
+      const pSumm = summarizeChunk({ text: ch.text, baseUrl: slmUrl });
+      const pMod = moderateText({ text: ch.text, baseUrl: guardianUrl });
+      const piiFindings = detectPIIRobust(ch.text, ch.page);
+
+      const [summ, mod] = await Promise.all([pSumm, pMod]);
+
+      console.log(`SLM Response for chunk ${ch.id}:`, JSON.stringify(summ, null, 2));
+      console.log(`Guardian Response for chunk ${ch.id}:`, JSON.stringify(mod, null, 2));
+      console.log(`PII Findings for chunk ${ch.id}:`, JSON.stringify(piiFindings, null, 2));
+
+      send('chunk', { id: ch.id, page: ch.page, start: ch.start, end: ch.end });
+      send('moderation', { id: ch.id, flags: mod.flags, scores: mod.scores, unsafe: mod.unsafe, rationale: mod.rationale || undefined });
+
+      // Send PII findings for this chunk if any detected
+      if (piiFindings.length > 0) {
+        const piiTypes = [...new Set(piiFindings.map(f => f.type))];
+        const chunkPiiData = {
+          id: ch.id,
+          page: ch.page,
+          count: piiFindings.length,
+          types: piiTypes,
+          findings: piiFindings.map(f => ({
+            type: f.type || 'Unknown',
+            field: f.field || 'Unknown Field',
+            severity: f.severity || 'medium',
+            page: f.page || ch.page,
+            value: f.value || '[redacted]',
+            redacted: f.redacted || '[REDACTED]'
+          }))
+        };
+        console.log(`Sending chunk_pii event:`, JSON.stringify(chunkPiiData, null, 2));
+        send('chunk_pii', chunkPiiData);
+      }
+
+      // DON'T send SLM summary to reduce noise
+      // send('slm', { id: ch.id, summary: summ.summary, key_phrases: summ.key_phrases, error: summ.error });
+      completed++;
+      send('progress', { completed, total: chunks.length });
+    }
+
+    // 4) Aggregate detections & final policy classification
+    send('status', { phase: 'final_analysis_start' });
+
+    console.log(`\n=== FINAL PII ANALYSIS ===`);
+    console.log(`extraction.blocks available: ${!!extraction.blocks}`);
+    console.log(`extraction.blocks length: ${extraction.blocks?.length || 0}`);
+    if (extraction.blocks && extraction.blocks.length > 0) {
+      console.log(`First block sample:`, JSON.stringify(extraction.blocks[0], null, 2));
+    }
+
+    // Use robust PII detector with pattern matching on blocks (includes page numbers)
+    const piiFindings = extraction.blocks && extraction.blocks.length > 0
+      ? detectPIIFromBlocks(extraction.blocks)
+      : detectPIIRobust(extraction.text || '');
+
+    console.log(`\n=== FINAL PII FINDINGS (${piiFindings.length} total) ===`);
+    console.log(JSON.stringify(piiFindings, null, 2));
+
+    const piiSummary = summarizePII(piiFindings);
+    const piiEvidence = formatPIIEvidence(piiFindings);
+    const redactionSuggestions = generateRedactionSuggestions(piiFindings);
+
+    console.log(`\n=== PII SUMMARY ===`);
+    console.log(JSON.stringify(piiSummary, null, 2));
+
+    const pii = {
+      items: piiFindings,
+      summary: piiSummary,
+      evidence: piiEvidence,
+      redactions: redactionSuggestions,
+      hasPII: piiSummary.hasPII,
+    };
+
+    const guards = runGuards({ text: extraction.text || '', meta: extraction.meta });
+    const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta });
+    const equipment = detectEquipment(extraction.text || '', extraction.meta);
+    const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment });
+
+    // Evidence and final
+    const prompts = buildPrompts({
+      classes: ['Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other'],
+      evidence: extraction.evidence,
+      candidateLabel: 'Other',
+    });
+    const local = await classifyLocal({ text: extraction.text || '', guards, meta: extraction.meta });
+    const updatedPrompts = buildPrompts({
+      classes: ['Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other'],
+      evidence: extraction.evidence,
+      candidateLabel: local.label,
+    });
+    const route = shouldRoute({ local, guards, meta: extraction.meta });
+    let verifier = null;
+    if (route.routed) {
+      verifier = await verifyWithLlama(updatedPrompts, process.env.LLAMA_URL || 'http://localhost:8080');
+    }
+
+    const final = {
+      label: local.label,
+      accepted: !route.routed || verifier?.verdict === 'yes',
+      reason: route.reason,
+    };
+
+    send('final', {
+      document_path: docPath || 'uploaded',
+      meta: extraction.meta,
+      pii,
+      safety,
+      equipment,
+      policy,
+      local,
+      routed: route.routed,
+      route_reason: route.reason,
+      verifier,
+      evidence: extraction.evidence,
+      chunks: { total: chunks.length },
+    });
+  } catch (err) {
+    send('error', { error: 'processing_failed', detail: String(err?.message || err) });
+  } finally {
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch { }
+    try { res.write('event: end\n'); res.write('data: {}\n\n'); } catch { }
+    res.end();
+  }
+});
+
 // Batch processing endpoint: accepts multiple files via multipart or JSON paths
 app.post('/api/process-batch', upload.array('files'), async (req, res) => {
   try {
@@ -218,7 +409,7 @@ app.post('/api/process-batch', upload.array('files'), async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: 'batch_failed', detail: String(e?.message || e) });
   } finally {
-    try { (req.files || []).forEach(f => fs.unlinkSync(f.path)); } catch {}
+    try { (req.files || []).forEach(f => fs.unlinkSync(f.path)); } catch { }
   }
 });
 
@@ -232,13 +423,13 @@ async function fetchLikeProcess(filePath, originalName) {
   const equipment = detectEquipment(extraction.text || '', extraction.meta);
   const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment });
   const prompts = buildPrompts({
-    classes: [ 'Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other' ],
+    classes: ['Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other'],
     evidence: extraction.evidence,
     candidateLabel: 'Other',
   });
   let local = await classifyLocal({ text: extraction.text || '', guards, meta: extraction.meta });
   const updatedPrompts = buildPrompts({
-    classes: [ 'Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other' ],
+    classes: ['Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other'],
     evidence: extraction.evidence,
     candidateLabel: local.label,
   });
@@ -267,7 +458,7 @@ async function fetchLikeProcess(filePath, originalName) {
 
 // HITL feedback endpoint: save SME feedback locally for later analysis
 const feedbackDir = path.join(__dirname, '../../feedback');
-try { fs.mkdirSync(feedbackDir, { recursive: true }); } catch {}
+try { fs.mkdirSync(feedbackDir, { recursive: true }); } catch { }
 
 app.post('/api/feedback', async (req, res) => {
   try {
@@ -300,7 +491,9 @@ function extractLabel(obj) {
   return null;
 }
 
-app.use(express.static(path.join(__dirname, '../../web')));
+// Serve static assets for both legacy web/ and new root-based UI
+try { app.use(express.static(path.join(__dirname, '../../public'))); } catch { }
+try { app.use(express.static(path.join(__dirname, '../../web'))); } catch { }
 
 app.listen(PORT, () => {
   console.log(`Doc classifier service listening on http://localhost:${PORT}`);

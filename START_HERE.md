@@ -22,7 +22,7 @@ This system automatically classifies documents into categories:
 
 It uses:
 - **AMD GPU acceleration** (Vulkan) for fast inference
-- **LLM (LFM2-8B)** for intelligent classification
+- **LLM (Qwen3-1.7B IQ4)** for intelligent classification
 - **Docling + OCR** for comprehensive text extraction
 - **Multi-stage verification** for high accuracy
 

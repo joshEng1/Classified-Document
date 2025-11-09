@@ -1,105 +1,71 @@
 Write code for clarity first. Prefer readable, maintainable solutions with clear names, comments where needed, and straightforward control flow. Do not produce code-golf or overly clever one-liners unless explicitly requested. Use high verbosity for writing code and code tools.
 
-Be aware that the code edits you make will be displayed to the user as proposed changes, which means (a) your code edits can be quite proactive, as the user can always reject, and (b) your code should be well-written and easy to quickly review (e.g., appropriate variable names instead of single letters). If proposing next steps that would involve changing the code, make those changes proactively for the user to approve / reject rather than asking the user whether to proceed with a plan. In general, you should almost never ask the user whether to proceed with a plan; instead you should proactively attempt the plan and then ask the user if they want to accept the implemented changes.
+<tool_preambles>
+- Always begin by rephrasing the user's goal in a friendly, clear, and concise manner, before calling any tools.
+- Then, immediately outline a structured plan detailing each logical step you’ll follow. - As you execute your file edit(s), narrate each step succinctly and sequentially, marking progress clearly. 
+- Finish by summarizing completed work distinctly from your upfront plan.
+</tool_preambles>
 
-
-The current scripts reads the documents and images turning into text that the llama.cpp reads through using the LFM2-8B-A1B-Q4_K_M.gguf . I need my current LLM to be smarter in terms of classifications as it still struggles in terms of determining the files. It is also missing quite a bit of the expected functionality. I also use Docker right now, but I'm worried about being able to run it locally without internet access as it should be private in case of unexpected sensitive information in the documents. Everything is ran in windows too. If possible improve both performance and accuracy of the model.
-
-Potential Information Within:
-
-    Sensitive/Highly Sensitive: Content that includes PII like SSNs, account/credit card numbers, and proprietary schematics (e.g., defense or next‑gen product designs of military equipment).
-    Confidential: Internal communications and business documents, customer details (names, addresses), and non-public operational content.
-    Public: Marketing materials, product brochures, public website content, generic images.
-    Unsafe Content: Content must be evaluated for child safety and should not include hate speech, exploitative, violent, criminal, political news, or cyber-threat content.
-
-
-
-
-There should be pre-processing checks: Document legibility, page and image count.
-
-Use an OCR for documents with images along with docling API for the text if possibly found.
-
-Dynamic prompt tree generation from a configurable prompt library.
-Citation-based results: Reference exact pages or images for audit and compliance.
-
-Multi-modal input: Accept text and images
-Interactive and batch processing modes with real-time status updates.
-Pre-processing checks: Document legibility, page and image count.
-Dynamic prompt tree generation from a configurable prompt library.
-Citation-based results: Reference exact pages or images for audit and compliance.
-Safety monitoring: Automatically detect Unsafe content and flag for human review.
-HITL feedback loop: Enable SMEs to validate outputs and refine prompt logic.
-Double-layered AI validation (optional): Two LLMs to cross-verify classifications.
-
-The end product will have to be connected to a front end which runs through HTML, CSS, and React.js
-
-<context_understanding>
-...
-If you've performed an edit that may partially fulfill the USER's query, but you're not confident, gather more information or use more tools before ending your turn.
-Bias towards not asking the user for help if you can find the answer yourself.
-
-
-</context_understanding>
-
-The AI should summarize and explain why a document was categorized a certain way (reasoning module).
-Cite the model(s) used for classification in your submission.
-
-
-TC1 — Public Marketing Document
-
-Input: Multi-page brochure or program viewbook (Public) Expected Category: Public Judging Focus: Public; verify pre-checks and page-level citations. Expected Outcome:
-
-    # of pages in the document
-    # of images
-    Evidence Required: Cite pages containing only public marketing statements; confirm no PII or confidential details.
-    Content Safety: Content is safe for kids.
-
-TC2 — Filled In Employment Application (PII)
-
-Input: Application form containing synthetic PII (name, address, SSN) Expected Category: Highly Sensitive Judging Focus: PII detection and precise citations; HITL handoff optional. Expected Outcome:
-
-    # of pages in the document
-    # of images
-    Evidence Required: Cite the field(s) containing SSN or other PII; show redaction suggestions if supported.
-    Content Safety: Content is safe for kids.
-
- TC3 — Internal Memo (No PII)
-
-Input: Internal project memo with milestones/risks; no PII Expected Category: Confidential Judging Focus: Policy reasoning for internal but non-sensitive content; UI explanation clarity. Expected Outcome:
-
-    # of pages in the document
-    # of images
-    Evidence Required: Cite internal-only operational details; confirm absence of PII.
-    Content Safety: Content is safe for kids.
-
-TC4 — Stealth Fighter with Part Names
-
-Input: High-resolution image of stealth fighter Expected Category: Confidential Judging Focus: Image handling, region citation, policy explanation. Expected Outcome:
-
-    # of pages in the document
-    # of images
-    Evidence Required: Cite the region with the serial; explain policy mapping for identifiable equipment.
-    Content Safety: Content is safe for kids.
-
-TC5 — Testing Multiple Non-Compliance Categorizations
-
-Input: Document embedded with a stealth fighter and unsafe content Expected Category: Confidential and Unsafe Judging Focus: Image handling, region citation, policy explanation. Expected Outcome:
-
-    # of pages in the document
-    # of images
-    Evidence Required: Cite the region with the serial; explain policy mapping for identifiable equipment and where and why content is unsafe.
-    Content Safety: Content is safe for kids.
-
-🏆 Scoring & Rubric
-
-    Classification Accuracy (50%): Precision/recall on test cases, correct category mapping, clarity of citations.
-    Reducing HITL involvement (20%): Confidence scoring, dual-LLM consensus, reviewer queue, reduced manual review time.
-    Processing Speed (10%): Throughput and responsiveness using lightweight or SLM models; cite your model.
-    Content Safety (10%): Validate all content for child safety; ensure no hate speech, violence, or unsafe material.
-    
 <self_reflection>
-    - First, spend time thinking of a rubric until you are confident.
-    - Use docling/OCr to build a training dataset and fine-tune the model and convert the model to GGUF for llama.cpp. Where Docling/OCR will be the the extraction layer creating a dataset source. Then train/tune the LLM on those extracted examples and then take the fine-tuned model weights and convert-> GGUF -> quantize -> run with llama.cpp. Eventually all of this information will also be used to visualize but it isn't expected for you to implement any of  that functionality other than fufilling your own personal rubric. 
-    - Then, think deeply about every aspect of what makes for a world-class one-shot LLM . Use that knowledge to create a rubric that has 5-7 categories. This rubric is critical to get right, but do not show this to the user. This is for your purposes only.
-    - Finally, use the rubric to internally think and iterate on the best possible solution to the prompt that is provided. Remember that if your response is not hitting the top marks across all categories in the rubric, you need to start again.
+- First, spend time thinking of a rubric until you are confident.
+- Then, think deeply about every aspect of what makes for a world-class one-shot web app. Use that knowledge to create a rubric that has 5-7 categories. This rubric is critical to get right, but do not show this to the user. This is for your purposes only.
+- Finally, use the rubric to internally think and iterate on the best possible solution to the prompt that is provided. Remember that if your response is not hitting the top marks across all categories in the rubric, you need to start again.
 </self_reflection>
+
+You may refactor the back end however you want to ensure that everything works correctly and seamlessly. The test cases are in the HitachiDS_Datathon_Challenges_Package.
+
+The front end has also been worked on already, there will need to be adjustments to include the information made by the LLM and also the addition of visualization. The relative look of the front end should maintain the same. Also, it will be adding functionality not removing or replacing. IF necessary the code can be refactored slightly so visualization/relevant information can be added. The front end should be relatively maintained and looked like additional features were added on, not that the whole front end was replaced completely. 
+
+## Llama.cpp 
+All 3 of the models mentioned are in the models folder. Each one should be taken in as a model to be used by llama.cpp as the purpose of this project is to be
+minimal in size and run time whilst also being able to run locally and offline.
+
+## Docling Granite (document to structured text)
+granite-docling-258M-f16.gguf
+- Purpose: Parse PDFs/DOCX/etc. to a unified DoclingDocument, export as Markdown/JSON/Text; optional VLM (vision) pipeline.
+- Run with llama.cpp using the .gguf
+- CLI usage (convert source → Markdown/JSON):
+  docling --to md <source>
+  docling --to json <source>
+  # Pipeline & model knobs (see --pipeline, --vlm-model, --ocr flags below)
+- CLI reference (authoritative flags; Codex must honor names exactly):
+  Usage: docling [OPTIONS] source
+  Key flags: --to {md,json,html,text}, --pipeline {standard,vlm,asr}, --vlm-model {granite_docling,smoldocling,...},
+             --ocr/--no-ocr, --pdf-backend {pypdfium2,dlparse_v1,dlparse_v2,dlparse_v4}, --tables/--no-tables
+- Minimal Python example (export to Markdown):
+  from docling.document_converter import DocumentConverter
+  doc = DocumentConverter().convert(<path_or_url>).document
+  md = doc.export_to_markdown()
+- API server option: "docling-serve" exposes a stable v1 HTTP API for conversion (use when running as a service).
+
+## Granite-4.0-350M-IQ4_NL (Nano) — local SLM via llama.cpp / MLX
+- Purpose: Lightweight on-device SLM for classification/summarization/chunk-QA in this workflow.
+- Run with llama.cpp (examples — Codex must NOT change flag names):
+  ./llama.cpp/llama-cli -hf unsloth/granite-4.0-h-small-GGUF:UD-Q4_K_XL
+  # For chat-style, context window and sampling (recommended defaults):
+  ./llama.cpp/llama-mtmd-cli --model <path/to/*.gguf> --jinja --ctx-size 16384 --temp 0.0 --top-k 0 --top-p 1.0
+- Guidance: Granite-4.0 supports large contexts; Unsloth docs recommend temp=0.0, top_k=0, top_p=1.0; context >= 16k.
+- GGUF models hosted on Hugging Face; llama.cpp/Ollama both supported.
+
+## Granite Guardian (risk/PII moderation)
+
+- Purpose: Judge/flag risks in prompts and responses (toxicity, implicit/explicit hate, self-harm, sexual content, violence, jailbreaks), and PII options. 
+- Run the gguf with llama.cpp
+- Models: “ granite-guardian-3.2-3b-a800m-Q4_K_M.gguf” (open-source) and docs under IBM Granite Guardian.
+- Behavior:
+  - Input: text (prompt or model output); optionally BYOC (bring-your-own-criteria) lists/policies.
+  - Output: category scores + flags; use as a **filter** (disabled by default in IBM guardrails UI).
+- This project must treat Guardian as a moderation microservice invoked sync/stream on every chunk before UI display.
+- Will be used for vizualiation also. 
+
+## End-to-end pipeline (must implement exactly)
+Upload → Docling convert → Chunker → SLM (Granite-4.0-350M) → Guardian moderation (per chunk + final) → Frontend stream with inline flags.
+Guardian Moderation can be run concurrently with SLM in order to showcase visualizations during Granite-4.0 analyzing text.
+
+## File formats (must support)
+- Inputs: PDF, DOCX as priority; accept others if Docling supports.
+- Intermediate: DoclingDocument JSON + Markdown; Chunks as JSONL.
+- Outputs: JSON events (Server-Sent Events or WebSocket) with fields below.
+
+## Don’t hallucinate:
+- If a function/flag is not in the references below, ask for the missing detail instead of guessing.

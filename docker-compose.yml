@@ -5,6 +5,14 @@ services:
     network_mode: "host"
     ports:
       - "7000:7000"
+    environment:
+      - DOCLING_PIPELINE=docling_cli
+      - DOCLING_CLI=docling
+      - DOCLING_TO=md
+      - DOCLING_OCR=1
+      - DOCLING_TABLES=1
+      # Optional backend for PDFs (uncomment to override)
+      # - DOCLING_PDF_BACKEND=pypdfium2
     restart: unless-stopped
   server:
     build:
@@ -19,6 +27,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       # With host networking, can use localhost directly
       - LLAMA_URL=${LLAMA_URL:-http://localhost:8080}
+      - SLM_URL=${SLM_URL:-http://localhost:8080}
+      - GUARDIAN_URL=${GUARDIAN_URL:-http://localhost:8081}
       - DOCLING_URL=http://localhost:7000
       - ROUTE_LOW=${ROUTE_LOW:-0.5}
       - AUTO_ACCEPT=${AUTO_ACCEPT:-0.9}

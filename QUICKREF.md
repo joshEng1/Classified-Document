@@ -108,7 +108,7 @@ git checkout -b feature/your-feature-name
 
 | Service | URL | Purpose |
 |---------|-----|---------|
-| Web UI | `file:///path/to/web/index.html` | User interface |
+| Web UI | `file:///path/to/index.html` | User interface |
 | API | `http://localhost:5055` | Classification API |
 | GPU Server | `http://localhost:8080` | LLM inference |
 | Docling | `http://localhost:7000` | PDF extraction |

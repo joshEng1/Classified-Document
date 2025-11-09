@@ -1,0 +1,13 @@
+html.docz > body main > div {
+    width: 100vw;
+    height: 100vh;
+}
+html.docz > body main > div > section {
+    box-sizing: border-box;
+    width: 100%;
+}
+
+html.docz > body main > section {
+    box-sizing: border-box;
+    height: 100vh;
+}

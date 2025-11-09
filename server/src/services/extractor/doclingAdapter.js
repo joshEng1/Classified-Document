@@ -17,7 +17,8 @@ export async function extractWithDocling({ filePath }) {
     const json = resp.data || {};
     const text = (json.text || (Array.isArray(json.blocks) ? json.blocks.map(b => b.text).join('\n') : '')).trim();
     const meta = { pages: json.pages || json.page_count || 0 };
-    return { text, meta, raw: json };
+    const blocks = json.blocks || [];  // Pass through blocks with page info
+    return { text, meta, raw: json, blocks };
   } catch {
     return null;
   }

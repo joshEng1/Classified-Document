@@ -51,14 +51,14 @@ cd ..
 
 ### Step 4: Download the LLM Model
 
-The system uses the **LFM2-8B-A1B** model (4.8GB). Download it to the `models/` directory:
+The system uses the **Qwen3-1.7B-IQ4** model (lightweight for mobile/offline use). Download it to the `models/` directory:
 
 ```powershell
 # Create models directory if it doesn't exist
 New-Item -ItemType Directory -Force -Path models
 
 # Download the model (you'll need to get the download link)
-# Place the .gguf file in: models/LFM2-8B-A1B-Q4_K_M.gguf
+# Place the .gguf file in: models/Qwen3-1.7B-IQ4_NL.gguf
 ```
 
 > **Note**: The model file is not included in the repository due to its size. Contact the project owner for the download link or use your own GGUF model.
@@ -266,12 +266,12 @@ choco install tesseract
 
 Make sure the model file is at:
 ```
-models/LFM2-8B-A1B-Q4_K_M.gguf
+models/Qwen3-1.7B-IQ4_NL.gguf
 ```
 
 Check the path in `start-gpu-server.ps1`:
 ```powershell
-$MODEL_PATH = "..\..\..\..\models\LFM2-8B-A1B-Q4_K_M.gguf"
+$MODEL_PATH = "..\..\..\..\models\Qwen3-1.7B-IQ4_NL.gguf"
 ```
 
 ## 📝 Configuration

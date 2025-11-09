@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { extractWithPdfParse } from './pdfText.js';
 import { extractWithDocling } from './doclingAdapter.js';
-import { runOCR } from './ocr.js';
 import { buildEvidence } from './selectors.js';
 import { mapCitations } from '../citations.js';
 
@@ -21,10 +19,11 @@ export async function extractDocument({ filePath, originalName, providedText, pr
   let text = '';
   let ocrText = '';
   let raw = null;
+  let blocks = [];  // Add blocks for page-level PII detection
   let used = 'none';
   const status = [];
   function mark(phase, extra) {
-    try { status.push({ phase, at: new Date().toISOString(), ...(extra || {}) }); } catch {}
+    try { status.push({ phase, at: new Date().toISOString(), ...(extra || {}) }); } catch { }
   }
 
   // Estimate image count early to decide extraction strategy
@@ -37,76 +36,31 @@ export async function extractDocument({ filePath, originalName, providedText, pr
     } catch { }
   }
 
-  // 1) Docling if available (for structured text)
+  // 1) Docling (required) for structured text
   if (preferDocling && filePath) {
-    try {
-      const dl = await extractWithDocling({ filePath });
-      if (dl?.text) {
-        text = dl.text;
-        meta = { ...meta, ...dl.meta, source: 'docling' };
-        raw = dl.raw;
-        used = 'docling';
-        mark('docling_ok', { pages: meta.pages });
-      }
-    } catch (e) {
-      console.error('[extractor] Docling failed:', e.message);
-      mark('docling_fail', { error: e?.message || String(e) });
+    const dl = await extractWithDocling({ filePath });
+    if (!dl || !dl.text) {
+      throw new Error('docling_required_failed');
     }
+    text = dl.text;
+    meta = { ...meta, ...dl.meta, source: 'docling' };
+    raw = dl.raw;
+    blocks = dl.blocks || [];  // Get blocks with page info
+    used = 'docling';
+    mark('docling_ok', { pages: meta.pages });
   }
 
-  // 2) OCR in parallel for documents with images (to extract text from embedded images)
-  const hasSignificantImages = meta.images >= 5; // Documents with 5+ images likely have text in images
-  const hasMinimalText = text.trim().length < 500; // Less than 500 chars suggests scanned/minimal text
-  const ext = (filePath ? path.extname(filePath).toLowerCase() : '');
-  const isImageFile = ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif', '.webp'].includes(ext);
+  // 2) No OCR/pdf-parse fallbacks here; Docling CLI handles OCR internally via --ocr.
 
-  if (filePath && (hasSignificantImages || hasMinimalText || isImageFile)) {
-    try {
-      console.log(`[extractor] Running OCR - images: ${meta.images}, text length: ${text.length}, reason: ${hasSignificantImages ? 'significant images' : (isImageFile ? 'image file' : 'minimal text')}`);
-      const ocr = await runOCR({ filePath });
-      if (ocr?.text) {
-        ocrText = ocr.text;
-        // Combine Docling + OCR text if both exist
-        if (text && ocrText && ocrText.trim().length > 50) {
-          text = `${text}\n\n[OCR EXTRACTED TEXT]\n${ocrText}`;
-          meta.source = 'docling+ocr';
-          used = 'docling+ocr';
-          console.log(`[extractor] Combined Docling + OCR text, total length: ${text.length}`);
-          mark('ocr_ok_combined', { length: text.length });
-        } else if (ocrText) {
-          text = ocrText;
-          meta = { ...meta, ...ocr.meta, source: 'ocr' };
-          used = 'ocr';
-          mark('ocr_ok', { length: text.length });
-        }
-      }
-    } catch (e) {
-      console.error('[extractor] OCR failed:', e.message);
-      mark('ocr_fail', { error: e?.message || String(e) });
-    }
-  }
-
-  // 3) Provided text (debug/testing)
-  if (!text && providedText) {
+  // 3) Provided text (debug/testing) only when no file path
+  if (!filePath && providedText) {
     text = providedText;
     meta = { ...meta, source: 'provided' };
     used = 'provided';
     mark('provided_text');
   }
 
-  // 4) pdf-parse fallback if no text yet
-  if (!text && filePath) {
-    try {
-      const pp = await extractWithPdfParse({ filePath });
-      text = pp.text;
-      meta = { ...meta, ...pp.meta, source: 'pdf-parse' };
-      used = 'pdf-parse';
-      mark('pdfparse_ok', { pages: meta.pages });
-    } catch (e) {
-      console.error('[extractor] pdf-parse failed:', e.message);
-      mark('pdfparse_fail', { error: e?.message || String(e) });
-    }
-  }
+  // 4) No pdf-parse fallback
 
   // 5) Legibility assessment
   const leg = basicLegibility({ text, numPages: meta.pages || 0 });
@@ -116,6 +70,6 @@ export async function extractDocument({ filePath, originalName, providedText, pr
   const evidenceRaw = buildEvidence({ text, meta });
   const evidence = mapCitations({ text, evidence: evidenceRaw, meta });
 
-  console.log(`[extractor] Extraction complete - source: ${used}, text length: ${text.length}, images: ${meta.images}`);
-  return { text, meta, evidence, raw, status };
+  console.log(`[extractor] Extraction complete - source: ${used}, text length: ${text.length}, images: ${meta.images}, blocks: ${blocks.length}`);
+  return { text, meta, evidence, raw, status, blocks };
 }

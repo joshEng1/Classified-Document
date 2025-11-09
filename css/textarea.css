@@ -1,0 +1,8 @@
+html.docz > body textarea {
+    border: none;
+    border-radius: var(--docz-border-radius);
+    font-size: 1em;
+    height: 1.5em;
+    padding: calc(var(--docz-padding-element) * 0.5) var(--docz-padding-element);
+    resize: none;
+}

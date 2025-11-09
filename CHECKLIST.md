@@ -39,7 +39,7 @@ Use this checklist to ensure everything is set up correctly before running the s
 ## 🤖 Model Setup
 
 - [ ] Create `models/` directory if it doesn't exist
-- [ ] Download LFM2-8B-A1B-Q4_K_M.gguf model (4.8GB)
+- [ ] Download Qwen3-1.7B-IQ4_NL.gguf model (lightweight mobile-friendly)
 - [ ] Place model in `models/` directory
 - [ ] Verify model path in `start-gpu-server.ps1`
 
@@ -66,7 +66,7 @@ Use this checklist to ensure everything is set up correctly before running the s
 
 - [ ] Start all services: `.\start-all.ps1`
 - [ ] Wait for services to start (check terminal output)
-- [ ] Open web interface: `web\index.html`
+- [ ] Open web interface: `index.html`
 - [ ] Run tests: `.\test-classification.ps1`
 
 ## 🎯 Expected Results
