@@ -171,6 +171,27 @@ const docz = {
                     docz.chat_queue_add(`   Risk scores: ${topRisks}`);
                 }
                 break;
+            case 'chunk_pii':
+                console.log('=== FRONTEND RECEIVED chunk_pii ===', JSON.stringify(ev.data, null, 2));
+                // Show PII detected in this chunk with real-time feedback
+                if (ev.data.count > 0) {
+                    const pageStr = ev.data.page ? ` (Page ${ev.data.page})` : '';
+                    docz.chat_queue_add(`🔒 PII Found${pageStr}: ${ev.data.count} item(s) - ${(ev.data.types || []).join(', ')}`);
+
+                    // Show details of findings
+                    if (ev.data.findings && ev.data.findings.length > 0) {
+                        console.log('=== Displaying findings ===', ev.data.findings);
+                        ev.data.findings.slice(0, 3).forEach(f => {
+                            console.log('Finding:', f);
+                            const severity = f.severity === 'critical' ? '⚠️ CRITICAL' : (f.severity === 'high' ? '⚠️' : '📝');
+                            docz.chat_queue_add(`   ${severity} ${f.type} in "${f.field}"`);
+                        });
+                        if (ev.data.findings.length > 3) {
+                            docz.chat_queue_add(`   ... and ${ev.data.findings.length - 3} more`);
+                        }
+                    }
+                }
+                break;
             case 'slm':
                 if (ev.data.summary) { docz.chat_queue_add('📄 Summary: ' + ev.data.summary); }
                 if (ev.data.key_phrases && ev.data.key_phrases.length) {
@@ -217,31 +238,115 @@ const docz = {
                 }
 
                 // PII detection with detailed citations
+                console.log('=== FRONTEND RECEIVED FINAL PII DATA ===');
+                console.log('ev.data.pii:', JSON.stringify(ev.data?.pii, null, 2));
+
                 if (ev.data?.pii) {
                     if (ev.data.pii.hasPII || (ev.data.pii.items && ev.data.pii.items.length > 0)) {
                         const piiCount = ev.data.pii.summary?.total || ev.data.pii.items?.length || 0;
-                        docz.chat_queue_add(`⚠️ PII Detected: ${piiCount} instance(s)`);
+                        console.log('=== Displaying PII, count:', piiCount);
+                        console.log('=== PII items:', ev.data.pii.items);
 
-                        // Show PII types breakdown
+                        docz.chat_queue_add('═══════════════════════════════════');
+                        docz.chat_queue_add(`⚠️ PII DETECTED: ${piiCount} Instance(s)`);
+                        docz.chat_queue_add('═══════════════════════════════════');
+
+                        // Show PII types breakdown with counts
                         if (ev.data.pii.summary?.byType) {
                             const types = Object.entries(ev.data.pii.summary.byType)
                                 .map(([type, items]) => `${type}(${items.length})`)
                                 .join(', ');
-                            docz.chat_queue_add(`   Types: ${types}`);
+                            docz.chat_queue_add(`📊 Types Found: ${types}`);
+                            docz.chat_queue_add('');
                         }
 
-                        // Show evidence citations
-                        if (ev.data.pii.evidence) {
-                            docz.chat_queue_add('   Evidence & Redaction Suggestions:');
-                            const evidenceLines = ev.data.pii.evidence.split('\n').slice(0, 10);
+                        // Show detailed findings with field names, pages, and redaction suggestions
+                        if (ev.data.pii.items && ev.data.pii.items.length > 0) {
+                            docz.chat_queue_add('📋 DETAILED FINDINGS:');
+                            docz.chat_queue_add('');
+
+                            // Group by severity
+                            const critical = ev.data.pii.items.filter(f => f.severity === 'critical');
+                            const high = ev.data.pii.items.filter(f => f.severity === 'high');
+                            const medium = ev.data.pii.items.filter(f => f.severity === 'medium');
+
+                            if (critical.length > 0) {
+                                console.log('=== Displaying CRITICAL findings ===', critical);
+                                docz.chat_queue_add('⚠️ CRITICAL SEVERITY:');
+                                critical.forEach((f, i) => {
+                                    console.log(`Critical finding ${i}:`, f);
+                                    const pageStr = f.page ? ` (Page ${f.page})` : '';
+                                    const type = f.type || 'Unknown';
+                                    const field = f.field || 'Unknown Field';
+                                    const value = f.value || '[not available]';
+                                    const redacted = f.redacted || '[REDACTED]';
+                                    console.log(`  Displaying: type=${type}, field=${field}, page=${pageStr}, value=${value}, redacted=${redacted}`);
+                                    docz.chat_queue_add(`   ${i + 1}. ${type} in "${field}"${pageStr}`);
+                                    docz.chat_queue_add(`      Found: "${value}" → Redact as: "${redacted}"`);
+                                });
+                                docz.chat_queue_add('');
+                            }
+
+                            if (high.length > 0) {
+                                console.log('=== Displaying HIGH findings ===', high);
+                                docz.chat_queue_add('⚠️ HIGH SEVERITY:');
+                                high.slice(0, 10).forEach((f, i) => {
+                                    console.log(`High finding ${i}:`, f);
+                                    const pageStr = f.page ? ` (Page ${f.page})` : '';
+                                    const type = f.type || 'Unknown';
+                                    const field = f.field || 'Unknown Field';
+                                    const value = f.value || '[not available]';
+                                    const redacted = f.redacted || '[REDACTED]';
+                                    console.log(`  Displaying: type=${type}, field=${field}, page=${pageStr}, value=${value}, redacted=${redacted}`);
+                                    docz.chat_queue_add(`   ${i + 1}. ${type} in "${field}"${pageStr}`);
+                                    docz.chat_queue_add(`      Found: "${value}" → Redact as: "${redacted}"`);
+                                });
+                                if (high.length > 10) {
+                                    docz.chat_queue_add(`   ... and ${high.length - 10} more high severity items`);
+                                }
+                                docz.chat_queue_add('');
+                            }
+
+                            if (medium.length > 0) {
+                                console.log('=== Displaying MEDIUM findings ===', medium);
+                                docz.chat_queue_add('📝 MEDIUM SEVERITY:');
+                                medium.slice(0, 5).forEach((f, i) => {
+                                    console.log(`Medium finding ${i}:`, f);
+                                    const pageStr = f.page ? ` (Page ${f.page})` : '';
+                                    const type = f.type || 'Unknown';
+                                    const field = f.field || 'Unknown Field';
+                                    const value = f.value || '[not available]';
+                                    const redacted = f.redacted || '[REDACTED]';
+                                    console.log(`  Displaying: type=${type}, field=${field}, page=${pageStr}, value=${value}, redacted=${redacted}`);
+                                    docz.chat_queue_add(`   ${i + 1}. ${type} in "${field}"${pageStr}`);
+                                    docz.chat_queue_add(`      Found: "${value}" → Redact as: "${redacted}"`);
+                                });
+                                if (medium.length > 5) {
+                                    docz.chat_queue_add(`   ... and ${medium.length - 5} more medium severity items`);
+                                }
+                            }
+                        } else if (ev.data.pii.evidence) {
+                            // Fallback to evidence string format
+                            docz.chat_queue_add('📋 Evidence & Redaction Suggestions:');
+                            const evidenceLines = ev.data.pii.evidence.split('\n').slice(0, 15);
                             evidenceLines.forEach(line => {
-                                if (line.trim()) docz.chat_queue_add('   ' + line);
+                                if (line.trim()) docz.chat_queue_add(line);
                             });
                         }
 
-                        // Show critical findings
-                        if (ev.data.pii.summary?.critical > 0) {
-                            docz.chat_queue_add(`   ⚠️ CRITICAL: ${ev.data.pii.summary.critical} high-risk PII items (SSN, etc.)`);
+                        // Show severity summary
+                        if (ev.data.pii.summary) {
+                            docz.chat_queue_add('');
+                            docz.chat_queue_add('📊 Severity Breakdown:');
+                            if (ev.data.pii.summary.critical > 0) {
+                                docz.chat_queue_add(`   ⚠️ Critical: ${ev.data.pii.summary.critical} (SSN, etc.)`);
+                            }
+                            if (ev.data.pii.summary.high > 0) {
+                                docz.chat_queue_add(`   ⚠️ High: ${ev.data.pii.summary.high} (Phone, Email, Address, DOB)`);
+                            }
+                            if (ev.data.pii.summary.medium > 0) {
+                                docz.chat_queue_add(`   📝 Medium: ${ev.data.pii.summary.medium} (ZIP codes, etc.)`);
+                            }
                         }
                     } else {
                         docz.chat_queue_add('✓ No PII Detected');

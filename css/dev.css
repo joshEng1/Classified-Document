@@ -7,16 +7,16 @@ html.docz .docz-submitter:disabled {
 html.docz .docz-chat {
     border-radius: var(--docz-border-radius);
     max-height: 67vh;
-    max-width: min(80vw, 80vh);
+    max-width: min(100vw, 100vh);
     overflow-y: scroll;
     padding: 2em;
 }
 
-html.docz .docz-chat > * {
+html.docz .docz-chat>* {
     display: block;
 }
 
-html.docz .docz-chat > p {
+html.docz .docz-chat>p {
     word-break: break-word;
 }
 

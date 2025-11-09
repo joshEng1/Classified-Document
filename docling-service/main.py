@@ -72,6 +72,7 @@ def _extract_with_docling_python(data: bytes, filename: str) -> dict:
     """
     Extract text from document using Docling Python API with standard pipeline.
     Uses DocumentConverter directly - no CLI, no VLM, just reliable document understanding.
+    Supports both PDF and DOCX files with page tracking.
     """
     import io
     import tempfile
@@ -97,8 +98,18 @@ def _extract_with_docling_python(data: bytes, filename: str) -> dict:
             }
         )
         
+        # Determine file extension from filename
+        suffix = ".pdf"  # default
+        try:
+            if filename:
+                _, ext = os.path.splitext(filename)
+                if ext and ext.lower() in [".pdf", ".docx", ".doc"]:
+                    suffix = ext.lower()
+        except Exception:
+            pass
+        
         # Write bytes to temp file (Docling needs file path)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
         
@@ -112,22 +123,36 @@ def _extract_with_docling_python(data: bytes, filename: str) -> dict:
             
             # Extract blocks from document structure with page numbers
             blocks = []
+            current_page = 1  # Track current page for documents without provenance
+            
             for element in doc.iterate_items():
                 if hasattr(element, 'text') and element.text.strip():
-                    page_num = None
-                    # Try to get page number from element's prov (provenance) information
+                    page_num = current_page  # Default to current page
+                    
+                    # Try to get page number from element's prov (provenance) - works for PDFs
                     if hasattr(element, 'prov') and element.prov:
                         for prov_item in element.prov:
                             if hasattr(prov_item, 'page_no'):
                                 page_num = prov_item.page_no + 1  # Convert 0-indexed to 1-indexed
+                                current_page = page_num  # Update current page tracker
                                 break
+                    
+                    # For DOCX/DOC, estimate page breaks based on content length
+                    # Approximate: ~3000 chars per page (typical for 12pt font, single-spaced)
+                    if suffix in ['.docx', '.doc'] and not hasattr(element, 'prov'):
+                        # Use cumulative character count to estimate pages
+                        total_chars = sum(len(b.get('text', '')) for b in blocks)
+                        estimated_page = (total_chars // 3000) + 1
+                        page_num = estimated_page
+                        current_page = estimated_page
+                    
                     blocks.append({
                         "text": element.text.strip(),
                         "page": page_num
                     })
             
             # Get page count
-            page_count = len(doc.pages) if hasattr(doc, 'pages') else 1
+            page_count = len(doc.pages) if hasattr(doc, 'pages') else max((b.get('page', 1) for b in blocks), default=1)
             
             return {
                 "pages": page_count,

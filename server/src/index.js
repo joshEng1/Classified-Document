@@ -255,35 +255,83 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     const chunks = chunkDocument(extraction.text || '', extraction.meta, { maxChars: 1600, minChars: 600 });
     send('chunk_index', { total: chunks.length });
 
-    // 3) Per-chunk SLM + Guardian in parallel, stream as each finishes
+    // 3) Per-chunk SLM + Guardian + PII detection, process sequentially for ordered output
     const guardianUrl = process.env.GUARDIAN_URL || process.env.LLAMA_URL || 'http://localhost:8080';
     const slmUrl = process.env.SLM_URL || process.env.LLAMA_URL || 'http://localhost:8080';
     let completed = 0;
 
-    await Promise.all(chunks.map(async (ch) => {
-      // fire both
+    // Process chunks sequentially to maintain order
+    for (const ch of chunks) {
+      console.log(`\n=== PROCESSING CHUNK ${ch.id} ===`);
+      console.log(`Chunk text length: ${ch.text?.length || 0}`);
+      console.log(`Chunk page: ${ch.page}`);
+      console.log(`Chunk text preview: ${ch.text?.substring(0, 200)}...`);
+
+      // Fire all three operations in parallel for this chunk
       const pSumm = summarizeChunk({ text: ch.text, baseUrl: slmUrl });
       const pMod = moderateText({ text: ch.text, baseUrl: guardianUrl });
-      // stream moderation first if it resolves faster
+      const piiFindings = detectPIIRobust(ch.text, ch.page);
+
       const [summ, mod] = await Promise.all([pSumm, pMod]);
+
+      console.log(`SLM Response for chunk ${ch.id}:`, JSON.stringify(summ, null, 2));
+      console.log(`Guardian Response for chunk ${ch.id}:`, JSON.stringify(mod, null, 2));
+      console.log(`PII Findings for chunk ${ch.id}:`, JSON.stringify(piiFindings, null, 2));
+
       send('chunk', { id: ch.id, page: ch.page, start: ch.start, end: ch.end });
       send('moderation', { id: ch.id, flags: mod.flags, scores: mod.scores, unsafe: mod.unsafe, rationale: mod.rationale || undefined });
+
+      // Send PII findings for this chunk if any detected
+      if (piiFindings.length > 0) {
+        const piiTypes = [...new Set(piiFindings.map(f => f.type))];
+        const chunkPiiData = {
+          id: ch.id,
+          page: ch.page,
+          count: piiFindings.length,
+          types: piiTypes,
+          findings: piiFindings.map(f => ({
+            type: f.type || 'Unknown',
+            field: f.field || 'Unknown Field',
+            severity: f.severity || 'medium',
+            page: f.page || ch.page,
+            value: f.value || '[redacted]',
+            redacted: f.redacted || '[REDACTED]'
+          }))
+        };
+        console.log(`Sending chunk_pii event:`, JSON.stringify(chunkPiiData, null, 2));
+        send('chunk_pii', chunkPiiData);
+      }
+
       // Only show summary if not unsafe or policy allows showing with mask
       send('slm', { id: ch.id, summary: summ.summary, key_phrases: summ.key_phrases, error: summ.error });
       completed++;
-      if (completed % 3 === 0 || completed === chunks.length) send('progress', { completed, total: chunks.length });
-    }));
+      send('progress', { completed, total: chunks.length });
+    }
 
     // 4) Aggregate detections & final policy classification
     send('status', { phase: 'final_analysis_start' });
+
+    console.log(`\n=== FINAL PII ANALYSIS ===`);
+    console.log(`extraction.blocks available: ${!!extraction.blocks}`);
+    console.log(`extraction.blocks length: ${extraction.blocks?.length || 0}`);
+    if (extraction.blocks && extraction.blocks.length > 0) {
+      console.log(`First block sample:`, JSON.stringify(extraction.blocks[0], null, 2));
+    }
 
     // Use robust PII detector with pattern matching on blocks (includes page numbers)
     const piiFindings = extraction.blocks && extraction.blocks.length > 0
       ? detectPIIFromBlocks(extraction.blocks)
       : detectPIIRobust(extraction.text || '');
+
+    console.log(`\n=== FINAL PII FINDINGS (${piiFindings.length} total) ===`);
+    console.log(JSON.stringify(piiFindings, null, 2));
+
     const piiSummary = summarizePII(piiFindings);
     const piiEvidence = formatPIIEvidence(piiFindings);
     const redactionSuggestions = generateRedactionSuggestions(piiFindings);
+
+    console.log(`\n=== PII SUMMARY ===`);
+    console.log(JSON.stringify(piiSummary, null, 2));
 
     const pii = {
       items: piiFindings,
