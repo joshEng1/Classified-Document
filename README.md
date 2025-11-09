@@ -1,40 +1,80 @@
-Classification-Document-Analyzer-Datathon
+# Classification Document Analyzer - Datathon
 
-Overview
-- End-to-end document classifier aligned with AGENTS.md:
-  - Pre-processing checks (legibility, page/image count proxy).
-- Extraction via Docling (optional), pdf-parse, OCR fallback.
-- Guard rules, PII detection + redaction (with citations).
-- Local classifier first; route hard cases to a verifier (OpenAI or llama.cpp GGUF).
-- Dynamic prompt library and citation-based evidence.
-- Minimal React UI (no build) served by the Node server.
-- Safety monitoring and policy classification (Public/Confidential/Highly Sensitive/Unsafe).
- - Equipment detection for serial/aircraft/parts with page citations (TC4/TC5).
-- Batch processing endpoint and status updates in responses.
+## 📚 Documentation
 
-Quick Start (Windows Native with AMD GPU)
-- **One-command startup:** `.\start-all.ps1` (starts everything)
-- **Manual startup:**
-  1. `.\start-system.ps1` (Docker services)
-  2. `.\start-gpu-server.ps1` (GPU-accelerated LLM)
-- **Open Web Interface:** `web\index.html`
-- **Stop everything:** `.\stop-all.ps1`
-- See `GPU-SETUP-WINDOWS.md` for detailed setup and troubleshooting
+### 🆕 New Users - Start Here!
+- **[QUICK-START-NVIDIA.md](QUICK-START-NVIDIA.md)** - **NVIDIA GPU users** (most common) - 30 min setup
+- **[QUICK-START-AMD.md](QUICK-START-AMD.md)** - AMD GPU users - 30 min setup
 
-Quick Start (Linux/WSL)
-- Edit `server/.env` from `server/.env.example`.
-- Install dependencies: `cd server && npm install`.
-- Start server: `npm start` (serves UI at `/`).
-- Upload a sample PDF from `HitachiDS_Datathon_Challenges_Package` and inspect results.
+### 📖 Detailed Guides
+- **[NVIDIA-SETUP.md](NVIDIA-SETUP.md)** - Complete NVIDIA CUDA setup guide
+- **[GPU-SETUP.md](GPU-SETUP.md)** - AMD Vulkan setup guide (original)
+- **[AGENTS.md](AGENTS.md)** - AI agent implementation details and requirements
 
-Docker Compose (with Docling-compatible extraction)
-- Windows: `.\start-system.ps1` or `docker compose up --build`
-- Linux: `./start-system.sh` or `docker compose up --build`
-- Server at http://localhost:5055, Docling service at http://localhost:7000
-- GPU server runs natively on Windows (see GPU-SETUP-WINDOWS.md)
-- The server is preconfigured to call the docling service via `DOCLING_URL=http://docling:7000`
+### 🔧 Reference
+- **[QUICKREF.md](QUICKREF.md)** - Quick command reference
+- **[SETUP.md](SETUP.md)** - General setup documentation
 
-Config
+## 🚀 Quick Start
+
+### For New Developers
+
+**Have an NVIDIA GPU?** (RTX 20/30/40 series, Tesla, etc.)
+```powershell
+# Check what you need to install
+.\setup-nvidia.ps1
+
+# Then follow: QUICK-START-NVIDIA.md
+```
+
+**Have an AMD GPU?** (Radeon RX 6000/7000 series)
+```powershell
+# Use AMD Vulkan setup
+# See: GPU-SETUP.md
+```
+
+### For Existing Users
+
+```powershell
+# NVIDIA GPU users:
+.\start-gpu-server-nvidia.ps1    # Terminal 1: GPU server
+docker compose up                 # Terminal 2: Other services
+
+# AMD GPU users:
+.\start-gpu-server.ps1            # Terminal 1: GPU server  
+docker compose up                 # Terminal 2: Other services
+
+# Test everything
+.\test-classification.ps1
+
+# Stop everything
+docker compose down
+# Then Ctrl+C in GPU terminal
+```
+
+## 📖 Overview
+
+End-to-end document classification system with:
+- **Pre-processing checks** (legibility, page/image count)
+- **Extraction** via Docling + OCR for documents with images
+- **Guard rules** and PII detection with redaction
+- **Local GPU-accelerated LLM** (AMD Vulkan) for classification
+- **Verifier** for second-pass validation
+- **Citation-based evidence** for audit trails
+- **Web UI** for easy document upload and results
+- **Safety monitoring** for unsafe content detection
+
+## 🏗️ Architecture
+
+```
+Web UI (port: file://) 
+    ↓
+Classification Server (port: 5055)
+    ↓
+GPU Server - llama.cpp (port: 8080) + Docling (port: 7000)
+```
+
+## ⚙️ Configuration
 - Prompts: `server/src/config/prompts.json` (classifier/verifier and class rules).
 - Thresholds: `ROUTE_LOW`, `AUTO_ACCEPT` in `.env`.
 - Verifier engine: `VERIFIER_ENGINE=openai|llama`. For llama.cpp, set `LLAMA_URL`.

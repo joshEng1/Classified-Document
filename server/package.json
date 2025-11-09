@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "NODE_ENV=development node src/index.js",
+    "one:shot": "node scripts/one-shot.js",
     "lint": "echo \"No linter configured\""
   },
   "dependencies": {

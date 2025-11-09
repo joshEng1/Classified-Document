@@ -1,7 +1,13 @@
 const e = React.createElement;
 
-// API base URL - change this if server is on different host/port
-const API_BASE = 'http://localhost:5055';
+// API base URL with overrides via query string (?api=...) or localStorage
+const DEFAULT_API = 'http://localhost:5055';
+function initialApiBase(){
+  try{
+    const q = new URLSearchParams(location.search).get('api');
+    return q || localStorage.getItem('apiBase') || DEFAULT_API;
+  }catch{ return DEFAULT_API; }
+}
 
 function App() {
   const [file, setFile] = React.useState(null);
@@ -9,13 +15,30 @@ function App() {
   const [result, setResult] = React.useState(null);
   const [error, setError] = React.useState(null);
 
+  const [apiBase, setApiBase] = React.useState(initialApiBase());
+  const [serverStatus, setServerStatus] = React.useState('unknown');
+
+  React.useEffect(()=>{
+    let cancelled = false;
+    (async () => {
+      setServerStatus('checking');
+      try{
+        const r = await fetch(`${apiBase}/health`, { method:'GET' });
+        if(!cancelled) setServerStatus(r.ok? 'online' : 'offline');
+      }catch{ if(!cancelled) setServerStatus('offline'); }
+    })();
+    return ()=>{ cancelled = true };
+  }, [apiBase]);
+
+  function saveApiBase(){ try{ localStorage.setItem('apiBase', apiBase); }catch{} }
+
   async function onSubmit(ev) {
     ev.preventDefault();
     setBusy(true); setError(null); setResult(null);
     try {
       const fd = new FormData();
       if (file) fd.append('file', file);
-      const resp = await fetch(`${API_BASE}/api/process`, { method: 'POST', body: fd });
+      const resp = await fetch(`${apiBase}/api/process`, { method: 'POST', body: fd });
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error || 'Request failed');
       setResult(json);
@@ -31,6 +54,12 @@ function App() {
   return e('div', { className: 'container' }, [
     e('div', { className: 'card' }, [
       e('h2', null, 'Document Classifier'),
+      e('div', { className:'row' }, [
+        e('label', { style:{marginRight:8}}, 'API Base:'),
+        e('input', { style:{width:'28rem'}, value: apiBase, onChange: ev=> setApiBase(ev.target.value) }),
+        e('button', { onClick: ()=> saveApiBase() }, 'Save'),
+        e('span', { style:{marginLeft:12, color: serverStatus==='online'?'green':(serverStatus==='checking'?'orange':'red')} }, `Server: ${serverStatus}`)
+      ]),
       e('form', { onSubmit }, [
         e('div', { className: 'row' }, [
           e('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.gif,.webp,.docx', onChange: ev => setFile(ev.target.files[0] || null) }),
@@ -69,6 +98,8 @@ function App() {
       ]),
       e('h3', null, 'Meta'),
       e('pre', null, JSON.stringify(result.meta, null, 2)),
+      e('h3', null, 'Review'),
+      e('pre', null, JSON.stringify(result.review, null, 2)),
     ])
   ]);
 }

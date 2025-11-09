@@ -8,6 +8,7 @@ yarn.lock
 /HitachiDS_Datathon_Challenges_Package
 */models
 
+**.ps1
 # Environment variables
 .env
 .env.local

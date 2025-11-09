@@ -8,7 +8,11 @@ export function runGuards({ text, meta }) {
   const hasApplication = countMatches(t, CUES.APPLICATION_CUES) >= 2;
   const hasInvoice = countMatches(t, CUES.INVOICE_CUES) >= 2;
 
-  const links = (t.match(/https?:\/\/[^\s)]+/g) || []).length + (t.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []).length;
+  // count links: http(s) URLs, emails, and bare domains (e.g., example.com)
+  const httpLinks = (t.match(/https?:\/\/[^\s)]+/g) || []).length;
+  const emails = (t.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []).length;
+  const bareDomains = (t.match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b/g) || []).length;
+  const links = httpLinks + emails + bareDomains;
   const currency = (t.match(/\$[\s\d,.]+/g) || []).length;
   const signature = /signature|signed by|\bdate:\b/i.test(text);
 
@@ -38,4 +42,3 @@ function countMatches(t, terms) {
   for (const k of terms) if (t.includes(k)) c++;
   return c;
 }
-

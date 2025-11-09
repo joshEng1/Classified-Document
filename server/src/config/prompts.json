@@ -51,7 +51,11 @@
       "Use ONLY if document does not clearly fit any of the above categories",
       "Use if evidence is insufficient to make a confident classification",
       "Use for mixed-type documents that span multiple categories",
-      "Use for document types not covered above (reports, manuals, forms, etc.)"
+      "Use for document types not covered above (reports, manuals, forms, etc.)",
+      "EXCLUDE: If branding + promotional/solution language present, do NOT choose Other (choose Public Marketing Document)",
+      "EXCLUDE: If memo headers present, do NOT choose Other (choose Internal Memo)",
+      "EXCLUDE: If invoice details present, do NOT choose Other (choose Invoice)",
+      "EXCLUDE: If application fields present, do NOT choose Other (choose Employee Application)"
     ]
   }
 }
