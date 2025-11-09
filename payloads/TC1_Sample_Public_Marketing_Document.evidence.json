@@ -1,0 +1,77 @@
+{
+  "document_path": "HitachiDS_Datathon_Challenges_Package/TC1_Sample_Public_Marketing_Document.pdf",
+  "class_set": [
+    "Internal Memo",
+    "Employee Application",
+    "Invoice",
+    "Public Marketing Document",
+    "Other"
+  ],
+  "routed_reason": "local_model_low_confidence_or_ood",
+  "extraction_status": {
+    "status": "extraction_tooling_missing",
+    "note": "PDF text/OCR tools (pdftotext/ocr) not available in this environment; payload contains schema placeholders."
+  },
+  "evidence": {
+    "headings": [],
+    "snippets": [],
+    "links": [],
+    "branding": [],
+    "layout_signals": []
+  },
+  "guards_summary": {
+    "has_marketing_terms": false,
+    "links_count": 0,
+    "branding_mentions": 0,
+    "required_cues_pass": false
+  },
+  "gpt_classifier_prompt": {
+    "system": "You are a precise document classifier. Use only the provided evidence. Return compact JSON.",
+    "user_template": {
+      "classes": [
+        "Internal Memo",
+        "Employee Application",
+        "Invoice",
+        "Public Marketing Document",
+        "Other"
+      ],
+      "evidence": {
+        "headings": "<array of short heading strings>",
+        "snippets": "<array of short indicative lines>",
+        "links": "<array of urls/emails/cta phrases>",
+        "branding": "<array of company/product mentions>",
+        "layout": "<array of tags e.g. multi-column,image_captions>"
+      },
+      "response_json": {
+        "label": "<one of classes>",
+        "rationale": "<=140 chars",
+        "used_snippets": ["<indices of snippets used>"]
+      }
+    }
+  },
+  "gpt_verifier_prompt": {
+    "system": "You are a strict verifier. Answer only with valid JSON. Base your decision only on the evidence.",
+    "user_template": {
+      "candidate_label": "Public Marketing Document",
+      "rules": [
+        "Contains marketing intent (CTA/links or promotional language)",
+        "Brand or company references present",
+        "Informational/promo content (features/benefits/customers)",
+        "Not transactional: no billing line items or signatures"
+      ],
+      "evidence": {
+        "headings": "<...>",
+        "snippets": "<...>",
+        "links": "<...>",
+        "branding": "<...>",
+        "layout": "<...>"
+      },
+      "response_json": {
+        "verdict": "yes | no",
+        "contradictions": ["<short notes of missing/contradictory cues>"],
+        "rationale": "<=120 chars"
+      }
+    }
+  }
+}
+
