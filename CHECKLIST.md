@@ -66,7 +66,7 @@ Use this checklist to ensure everything is set up correctly before running the s
 
 - [ ] Start all services: `.\start-all.ps1`
 - [ ] Wait for services to start (check terminal output)
-- [ ] Open web interface: `web\index.html`
+- [ ] Open web interface: `index.html`
 - [ ] Run tests: `.\test-classification.ps1`
 
 ## 🎯 Expected Results

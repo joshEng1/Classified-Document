@@ -14,6 +14,8 @@ function App() {
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState(null);
   const [error, setError] = React.useState(null);
+  const [stream, setStream] = React.useState(true);
+  const [events, setEvents] = React.useState([]);
 
   const [apiBase, setApiBase] = React.useState(initialApiBase());
   const [serverStatus, setServerStatus] = React.useState('unknown');
@@ -35,20 +37,76 @@ function App() {
   async function onSubmit(ev) {
     ev.preventDefault();
     setBusy(true); setError(null); setResult(null);
+    setEvents([]);
     try {
-      const fd = new FormData();
-      if (file) fd.append('file', file);
-      const resp = await fetch(`${apiBase}/api/process`, { method: 'POST', body: fd });
-      const json = await resp.json();
-      if (!resp.ok) throw new Error(json.error || 'Request failed');
-      setResult(json);
+      if (!file) throw new Error('No file selected');
+      if (stream) {
+        await processStream(file);
+      } else {
+        const fd = new FormData();
+        fd.append('file', file);
+        const resp = await fetch(`${apiBase}/api/process`, { method: 'POST', body: fd });
+        const json = await resp.json();
+        if (!resp.ok) throw new Error(json.error || 'Request failed');
+        setResult(json);
+      }
     } catch (err) { setError(String(err.message || err)); }
     finally { setBusy(false); }
+  }
+
+  async function processStream(fileObj) {
+    const fd = new FormData();
+    fd.append('file', fileObj);
+    const resp = await fetch(`${apiBase}/api/process-stream`, { method: 'POST', body: fd });
+    if (!resp.ok && resp.status !== 200) throw new Error('Stream request failed');
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const packet = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        const evt = parseSSE(packet);
+        if (!evt) continue;
+        setEvents(prev => [...prev, evt]);
+        if (evt.event === 'final') setResult(evt.data);
+      }
+    }
+  }
+
+  function parseSSE(chunk) {
+    // Expect lines like: event: name\n data: {...}
+    const lines = chunk.split(/\n/);
+    let name = null; let data = '';
+    for (const ln of lines) {
+      if (ln.startsWith('event: ')) name = ln.slice(7).trim();
+      else if (ln.startsWith('data: ')) data += ln.slice(6);
+    }
+    if (!name) return null;
+    try { return { event: name, data: JSON.parse(data || '{}') }; } catch { return { event: name, data: {} }; }
   }
 
   function GuardPills({ guards }) {
     if (!guards) return null; const entries = Object.entries(guards);
     return e('div', null, entries.slice(0, 12).map(([k, v]) => e('span', { key: k, className: 'pill' }, `${k}: ${v}`)));
+  }
+
+  function ModPills() {
+    const mods = events.filter(ev => ev.event === 'moderation').map(ev => ev.data);
+    if (!mods.length) return null;
+    const agg = {};
+    for (const m of mods) {
+      for (const f of (m.flags || [])) agg[f] = (agg[f] || 0) + 1;
+    }
+    const arr = Object.entries(agg).sort((a,b)=> b[1]-a[1]).slice(0, 10);
+    if (!arr.length) return e('div', null);
+    return e('div', null, [
+      e('h3', null, 'Moderation Flags (streamed)'),
+      e('div', null, arr.map(([k,v]) => e('span', { key:k, className:'pill' }, `${k}: ${v}`)))
+    ]);
   }
 
   return e('div', { className: 'container' }, [
@@ -63,7 +121,11 @@ function App() {
       e('form', { onSubmit }, [
         e('div', { className: 'row' }, [
           e('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.gif,.webp,.docx', onChange: ev => setFile(ev.target.files[0] || null) }),
-          e('button', { type: 'submit', disabled: busy || !file }, busy ? 'Processing...' : 'Process')
+          e('label', { style:{marginLeft:12}}, [
+            e('input', { type:'checkbox', checked: stream, onChange: ev=> setStream(ev.target.checked) }),
+            ' Stream analysis'
+          ]),
+          e('button', { type: 'submit', disabled: busy || !file }, busy ? 'Processing...' : (stream ? 'Process (Stream)' : 'Process'))
         ])
       ])
     ]),
@@ -78,6 +140,13 @@ function App() {
         e('div', { className: result.local.confidence >= 0.9 ? 'ok' : (result.routed ? 'warn' : '') }, `Local: ${result.local.label} (p=${result.local.confidence.toFixed(2)})`),
         e('div', null, `Routed: ${String(result.routed)} (${result.route_reason})`),
       ]),
+      stream && events?.length ? e('div', null, [
+        e('h3', null, 'Stream'),
+        e('pre', { style:{ maxHeight: '240px', overflow:'auto', background:'#111', color:'#eee', padding:'8px', borderRadius:'8px' } },
+          events.map((ev,i)=> `${String(i+1).padStart(2,'0')} ${ev.event}: ${JSON.stringify(ev.data)}`).join('\n')
+        )
+      ]) : null,
+      stream ? e(ModPills, {}) : null,
       e('h3', null, 'Guards'),
       e(GuardPills, { guards: result.guards }),
       e('h3', null, 'Evidence'),

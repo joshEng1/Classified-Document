@@ -2,10 +2,13 @@ const docz = {
     file_input: null,
     previews: document.querySelector(".docz-previews"),
     submitter: document.querySelector(".docz-submitter"),
+    _feedback_buttons_added: false,
+    _pdf_shown: false,
     main: (() => {
         docz.file_input = document.createElement("input");
         docz.file_input.setAttribute("type", "file");
-        docz.file_input.setAttribute("accept", ".pdf,.mp4,.mov");
+        // Accept PDFs, DOCX, common images, and optional videos
+        docz.file_input.setAttribute("accept", ".pdf,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.gif,.webp,.mp4,.mov");
         docz.file_input.setAttribute("multiple", "");
         docz.file_input.addEventListener("change", (() => {
             for (let i = 0; i < docz.file_input.files.length; i++) {
@@ -16,6 +19,7 @@ const docz = {
             }
         }));
         docz.submitter.setAttribute("disabled", "");
+        console.log('[docz] UI initialized, streaming enabled');
         docz.section_show("1");
     }),
     section_show: ((id) => {
@@ -75,6 +79,8 @@ const docz = {
     _chat_queue: [],
     chat_clear: (() => {
         docz._chat_queue.length = 0;
+        docz._feedback_buttons_added = false; // Reset button flag
+        docz._pdf_shown = false; // Reset PDF display flag
         for (let i = docz.chat.children.length; i--;) {
             const child = docz.chat.children[i];
             if (child.classList.contains("docz-preview")) {
@@ -84,28 +90,194 @@ const docz = {
             docz.chat.removeChild(child);
         }
     }),
-    chat_submit: (() => {
+    _api_base: (() => { try { const q = new URLSearchParams(location.search).get('api'); return q || localStorage.getItem('apiBase') || 'http://localhost:5055'; } catch { return 'http://localhost:5055'; } })(),
+    chat_submit: (async () => {
+        if (!docz.previews.children.length) return;
         docz.section_show("2");
-        docz.chat_queue_add("Hello there!");
-        docz.chat_queue_add("I have analyzed your file.");
-        docz.chat_queue_add([docz.previews.children[0].file, "page=2"]);
-        docz.chat_queue_add("It is a public file.");
+        const file = docz.previews.children[0].file;
+        try {
+            await docz._stream_process(file);
+        } catch (e) {
+            docz.chat_queue_add("Error: " + (e?.message || e));
+            docz.chat_queue_run();
+        }
+    }),
+    _stream_process: (async (file) => {
+        // Start SSE POST to /api/process-stream
+        const fd = new FormData(); fd.append('file', file);
+        const resp = await fetch(docz._api_base + '/api/process-stream', { method: 'POST', body: fd });
+        const reader = resp.body.getReader(); const dec = new TextDecoder('utf-8');
+        let buf = '';
+        docz.chat_clear();
+        docz.chat_queue_add('Beginning analysis...');
+        docz.chat_queue_run();
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let idx;
+            while ((idx = buf.indexOf('\n\n')) !== -1) {
+                const pkt = buf.slice(0, idx); buf = buf.slice(idx + 2);
+                const ev = docz._parse_sse(pkt);
+                if (!ev) continue;
+                docz._handle_event(ev, file);
+            }
+        }
+    }),
+    _parse_sse: ((chunk) => {
+        let name = null, data = '';
+        for (const ln of chunk.split(/\n/)) {
+            if (ln.startsWith('event: ')) name = ln.slice(7).trim();
+            else if (ln.startsWith('data: ')) data += ln.slice(6);
+        }
+        if (!name) return null;
+        try { return { event: name, data: JSON.parse(data || '{}') }; } catch { return { event: name, data: {} }; }
+    }),
+    _handle_event: ((ev, file) => {
+        switch (ev.event) {
+            case 'status':
+                if (ev.data?.phase) { docz.chat_queue_add('Phase: ' + ev.data.phase.replace(/_/g, ' ')); }
+                break;
+            case 'extract':
+                // Show PDF preview only once at extraction
+                if (file && !docz._pdf_shown) {
+                    docz._pdf_shown = true;
+                    docz.chat_queue_add([file, `page=1`]);
+                }
+                break;
+            case 'precheck':
+                docz.chat_queue_add(`Pre-checks: pages=${ev.data.pages}, images=${ev.data.images}`);
+                break;
+            case 'chunk':
+                // Don't show PDF for every chunk - just log chunk processing
+                docz.chat_queue_add(`Processing chunk ${ev.data.id || '?'} (page ${ev.data.page || 1})...`);
+                break;
+            case 'moderation':
+                // Show Guardian moderation results with visual feedback
+                if (ev.data.unsafe) {
+                    docz.chat_queue_add(`⚠️ Safety Alert: ${(ev.data.flags || []).join(', ')}`);
+                } else if ((ev.data.flags || []).length) {
+                    docz.chat_queue_add(`🔍 Flags detected: ${(ev.data.flags || []).join(', ')}`);
+                } else {
+                    docz.chat_queue_add(`✓ Content safe (chunk ${ev.data.id || '?'})`);
+                }
+                // Show risk scores if available
+                if (ev.data.scores && Object.keys(ev.data.scores).length > 0) {
+                    const topRisks = Object.entries(ev.data.scores)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([k, v]) => `${k}:${(v * 100).toFixed(0)}%`)
+                        .join(', ');
+                    docz.chat_queue_add(`   Risk scores: ${topRisks}`);
+                }
+                break;
+            case 'slm':
+                if (ev.data.summary) { docz.chat_queue_add('📄 Summary: ' + ev.data.summary); }
+                if (ev.data.key_phrases && ev.data.key_phrases.length) {
+                    docz.chat_queue_add('   Key phrases: ' + ev.data.key_phrases.slice(0, 5).join(', '));
+                }
+                break;
+            case 'progress':
+                docz.chat_queue_add(`Progress: ${ev.data.completed}/${ev.data.total} chunks analyzed`);
+                break;
+            case 'final':
+                // Display comprehensive test case results
+                docz.chat_queue_add('═══════════════════════════════════');
+                docz.chat_queue_add('📊 FINAL RESULTS');
+                docz.chat_queue_add('═══════════════════════════════════');
+
+                if (ev.data?.final?.label) {
+                    docz.chat_queue_add('✅ Classification: ' + ev.data.final.label);
+                }
+                else if (ev.data?.local?.label) {
+                    docz.chat_queue_add('✅ Classification: ' + ev.data.local.label);
+                }
+
+                // Test case required fields
+                if (ev.data?.meta) {
+                    docz.chat_queue_add(`📄 Pages: ${ev.data.meta.pages || 0}`);
+                    docz.chat_queue_add(`🖼️ Images: ${ev.data.meta.images || 0}`);
+                }
+
+                // Evidence/Citations
+                if (ev.data?.evidence && Array.isArray(ev.data.evidence) && ev.data.evidence.length > 0) {
+                    docz.chat_queue_add(`📌 Evidence: ${ev.data.evidence.length} citation(s)`);
+                    ev.data.evidence.slice(0, 3).forEach((cite, i) => {
+                        docz.chat_queue_add(`   ${i + 1}. Page ${cite.page || '?'}: ${(cite.text || '').substring(0, 80)}...`);
+                    });
+                }
+
+                // Safety assessment
+                if (ev.data?.safety) {
+                    const safeForKids = ev.data.safety.safe_for_kids !== false;
+                    docz.chat_queue_add(`${safeForKids ? '✓' : '⚠️'} Content Safety: ${safeForKids ? 'Safe for kids' : 'NOT safe for kids'}`);
+                    if (ev.data.safety.concerns && ev.data.safety.concerns.length > 0) {
+                        docz.chat_queue_add(`   Concerns: ${ev.data.safety.concerns.join(', ')}`);
+                    }
+                }
+
+                // PII detection with detailed citations
+                if (ev.data?.pii) {
+                    if (ev.data.pii.hasPII || (ev.data.pii.items && ev.data.pii.items.length > 0)) {
+                        const piiCount = ev.data.pii.summary?.total || ev.data.pii.items?.length || 0;
+                        docz.chat_queue_add(`⚠️ PII Detected: ${piiCount} instance(s)`);
+
+                        // Show PII types breakdown
+                        if (ev.data.pii.summary?.byType) {
+                            const types = Object.entries(ev.data.pii.summary.byType)
+                                .map(([type, items]) => `${type}(${items.length})`)
+                                .join(', ');
+                            docz.chat_queue_add(`   Types: ${types}`);
+                        }
+
+                        // Show evidence citations
+                        if (ev.data.pii.evidence) {
+                            docz.chat_queue_add('   Evidence & Redaction Suggestions:');
+                            const evidenceLines = ev.data.pii.evidence.split('\n').slice(0, 10);
+                            evidenceLines.forEach(line => {
+                                if (line.trim()) docz.chat_queue_add('   ' + line);
+                            });
+                        }
+
+                        // Show critical findings
+                        if (ev.data.pii.summary?.critical > 0) {
+                            docz.chat_queue_add(`   ⚠️ CRITICAL: ${ev.data.pii.summary.critical} high-risk PII items (SSN, etc.)`);
+                        }
+                    } else {
+                        docz.chat_queue_add('✓ No PII Detected');
+                    }
+                } else if (ev.data?.pii && ev.data.pii.found) {
+                    docz.chat_queue_add(`⚠️ PII Detected: ${ev.data.pii.types ? ev.data.pii.types.join(', ') : 'Yes'}`);
+                } else {
+                    docz.chat_queue_add('✓ No PII Detected');
+                }
+
+                docz.chat_queue_add('═══════════════════════════════════');
+                break;
+            case 'error':
+                docz.chat_queue_add('❌ Error: ' + (ev.data?.detail || ev.data?.error || 'unknown'));
+                break;
+        }
         docz.chat_queue_run();
     }),
     chat_queue_add: ((value) => {
-        docz._chat_queue.push(value);  
+        docz._chat_queue.push(value);
     }),
     chat_queue_run: (() => {
         if (!docz._chat_queue.length) {
-            const buttons = document.createElement("div");
-            buttons.className = "docz-flex";
-            const button_yes = document.createElement("button");
-            button_yes.innerText = "CORRECT";
-            buttons.appendChild(button_yes);
-            const button_no = document.createElement("button");
-            button_no.innerText = "WRONG";
-            buttons.appendChild(button_no);
-            docz.chat.appendChild(buttons);
+            // Only add feedback buttons once
+            if (!docz._feedback_buttons_added) {
+                docz._feedback_buttons_added = true;
+                const buttons = document.createElement("div");
+                buttons.className = "docz-flex";
+                const button_yes = document.createElement("button");
+                button_yes.innerText = "CORRECT";
+                buttons.appendChild(button_yes);
+                const button_no = document.createElement("button");
+                button_no.innerText = "WRONG";
+                buttons.appendChild(button_no);
+                docz.chat.appendChild(buttons);
+            }
             return;
         }
         const timeout = 33;
