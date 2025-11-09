@@ -39,7 +39,7 @@ Use this checklist to ensure everything is set up correctly before running the s
 ## 🤖 Model Setup
 
 - [ ] Create `models/` directory if it doesn't exist
-- [ ] Download LFM2-8B-A1B-Q4_K_M.gguf model (4.8GB)
+- [ ] Download Qwen3-1.7B-IQ4_NL.gguf model (lightweight mobile-friendly)
 - [ ] Place model in `models/` directory
 - [ ] Verify model path in `start-gpu-server.ps1`
 

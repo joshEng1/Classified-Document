@@ -126,7 +126,7 @@ Edit `start-gpu-server.ps1`:
 
 ### Model file not found:
 - Update path in `start-gpu-server.ps1`
-- Current path: `C:\Users\joshe\Downloads\LFM2-8B-A1B-Q4_K_M.gguf`
+- Current path: `C:\Users\joshe\Downloads\Qwen3-1.7B-IQ4_NL.gguf`
 
 ---
 
@@ -136,4 +136,3 @@ Edit `start-gpu-server.ps1`:
 - Docker services run in WSL for easy container management
 - All services communicate via `localhost` network
 - WSL Vulkan support is limited, hence Windows-native GPU server
-

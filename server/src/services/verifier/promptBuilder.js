@@ -15,24 +15,14 @@ try {
 
 export function buildPrompts({ classes, evidence, candidateLabel }) {
   // Build classifier prompt with detailed instructions
-  const classifierInstructions = `
-TASK: Classify this document into ONE of the following categories: ${classes.join(', ')}
-
-CRITICAL CLASSIFICATION RULES:
-1. **Internal Memo** requires EXPLICIT To:/From:/Date:/Subject: headers. If you don't see these specific headers in the evidence, it is NOT a memo.
-2. **Public Marketing Document** is professional promotional content about products/services with company branding. It does NOT have To:/From headers.
-3. **Employee Application** has form fields for applicant info, work history, and references.
-4. **Invoice** has billing details, line items with prices, and invoice numbers.
-5. If none of the above fit clearly, choose **Other**.
-
-ANALYSIS STEPS:
-1. Check evidence for To:/From:/Date:/Subject: headers → If present: Internal Memo
-2. Check for promotional product/service content + company branding + no memo headers → If present: Public Marketing Document
-3. Check for application form fields → If present: Employee Application
-4. Check for invoice/billing details → If present: Invoice
-5. If unclear or mixed → Choose Other
-
-EVIDENCE PROVIDED:`;
+  const classifierInstructions = `Classify this document into one of: ${classes.join(', ')}.
+Rules:
+- Internal Memo: explicit To/From/Date/Subject headers.
+- Public Marketing Document: promo language + branding/links, no memo headers.
+- Employee Application: applicant fields, work history, signature/date.
+- Invoice: vendor + bill-to info with currency line items/totals.
+- Otherwise choose Other.
+Respond with JSON using the format below. Evidence follows.`;
 
   // Dynamic decision prompts (simple tree) guided by evidence presence
   const decisionTree = [
@@ -60,21 +50,10 @@ EVIDENCE PROVIDED:`;
 
   // Build verifier prompt with the rules for the candidate label
   const rules = LIB.rules?.[candidateLabel] || defaultRules(candidateLabel);
-  const verifierInstructions = `
-TASK: Verify if the classification "${candidateLabel}" is correct based on the evidence.
-
-CLASSIFICATION RULES FOR "${candidateLabel}":
+  const verifierInstructions = `Verify whether "${candidateLabel}" matches the evidence.
+Rules to apply:
 ${rules.map((rule, idx) => `${idx + 1}. ${rule}`).join('\n')}
-
-INSTRUCTIONS:
-1. Check if the evidence satisfies the REQUIRED criteria for "${candidateLabel}"
-2. Check if the evidence violates any EXCLUDE criteria
-3. Look for contradictions between the evidence and the classification
-4. Return "yes" if the classification is supported, "no" if it contradicts the evidence
-5. List specific contradictions found (or empty array if none)
-6. Provide a brief rationale (max 120 chars)
-
-EVIDENCE TO VERIFY:`;
+Return JSON with verdict (yes/no), contradictions (array), and a ≤120 char rationale. Evidence follows.`;
 
   const verifier = {
     system: LIB.system_verifier,
