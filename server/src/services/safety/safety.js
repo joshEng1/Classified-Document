@@ -58,8 +58,10 @@ export function assessSafety({ text, meta }) {
   return {
     unsafe,
     categories,
+    concerns: categories,
     matches,
     kid_safe: !unsafe,
+    safe_for_kids: !unsafe,
   };
 }
 

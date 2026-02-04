@@ -2,7 +2,6 @@ version: "3.8"
 services:
   docling:
     build: ./docling-service
-    network_mode: "host"
     ports:
       - "7000:7000"
     environment:
@@ -18,23 +17,36 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
-    network_mode: "host"
     ports:
       - "5055:5055"
     environment:
       - PORT=5055
       - VERIFIER_ENGINE=${VERIFIER_ENGINE:-llama}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      # With host networking, can use localhost directly
-      - LLAMA_URL=${LLAMA_URL:-http://localhost:8080}
-      - SLM_URL=${SLM_URL:-http://localhost:8080}
-      - GUARDIAN_URL=${GUARDIAN_URL:-http://localhost:8081}
-      - DOCLING_URL=http://localhost:7000
+      # In Docker Desktop (Windows/macOS), use host.docker.internal to reach host-run llama.cpp servers
+      - LLAMA_URL=${LLAMA_URL:-http://host.docker.internal:8080}
+      - SLM_URL=${SLM_URL:-http://host.docker.internal:8080}
+      - GUARDIAN_URL=${GUARDIAN_URL:-http://host.docker.internal:8081}
+      - GUARDIAN_MODEL=${GUARDIAN_MODEL:-granite-guardian-3.2-3b-a800m}
+      - VISION_URL=${VISION_URL:-http://host.docker.internal:8082}
+      - VISION_MODEL=${VISION_MODEL:-granite-vision-3.2-2b}
+      - VISION_ENABLE=${VISION_ENABLE:-true}
+      - VISION_IMAGE_COVERAGE_THRESHOLD=${VISION_IMAGE_COVERAGE_THRESHOLD:-0.25}
+      - VISION_FIGURE_COUNT_THRESHOLD=${VISION_FIGURE_COUNT_THRESHOLD:-1}
+      - VISION_MIN_TEXT_CHARS_WITH_FIGURES=${VISION_MIN_TEXT_CHARS_WITH_FIGURES:-200}
+      - VISION_CROP_FIGURES=${VISION_CROP_FIGURES:-true}
+      - VISION_MAX_REGIONS_PER_PAGE=${VISION_MAX_REGIONS_PER_PAGE:-3}
+      - VISION_MIN_REGION_AREA_PCT=${VISION_MIN_REGION_AREA_PCT:-0.03}
+      - VISION_RENDER_DPI=${VISION_RENDER_DPI:-220}
+      - VISION_MAX_PAGES=${VISION_MAX_PAGES:-12}
+      # Docling is another container on the default compose network
+      - DOCLING_URL=http://docling:7000
       - ROUTE_LOW=${ROUTE_LOW:-0.5}
       - AUTO_ACCEPT=${AUTO_ACCEPT:-0.9}
       - LOCAL_CLASSIFIER=${LOCAL_CLASSIFIER:-llama}
       - VERIFY_SECOND_PASS=${VERIFY_SECOND_PASS:-true}
       - LOCAL_DEFAULT_CONF=${LOCAL_DEFAULT_CONF:-0.92}
+      - REDACT_OUTPUT_PDF=${REDACT_OUTPUT_PDF:-true}
     depends_on:
       - docling
     restart: unless-stopped

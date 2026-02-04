@@ -240,6 +240,12 @@ const docz = {
                     }
                 }
 
+                // Redacted PDF link (burned-in black boxes)
+                if (ev.data?.redacted_pdf?.url) {
+                    docz.chat_queue_add('');
+                    docz.chat_queue_add('Redacted PDF available: ' + ev.data.redacted_pdf.url);
+                }
+
                 // PII detection with detailed citations
                 console.log('=== FRONTEND RECEIVED FINAL PII DATA ===');
                 console.log('ev.data.pii:', JSON.stringify(ev.data?.pii, null, 2));

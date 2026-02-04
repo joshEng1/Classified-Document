@@ -80,6 +80,7 @@ GPU Server - llama.cpp (port: 8080) + Docling (port: 7000)
 - Verifier engine: `VERIFIER_ENGINE=openai|llama`. For llama.cpp, set `LLAMA_URL`.
 - Docling REST (optional): set `DOCLING_URL` if you have a Docling server.
  - PII Redaction: `REDACT_PII=true|false`.
+ - Redacted PDF output: `REDACT_OUTPUT_PDF=true|false` (burned-in black boxes; served via `/api/redacted/:name`).
  - Cross-verify with two LLMs: `CROSS_VERIFY=true` (requires both engines configured).
  - Offline mode: `OFFLINE_MODE=true` to avoid any external network.
 
@@ -94,4 +95,5 @@ Front end
 Notes
 - For robust citations (page/bbox), integrate Docling or PDF engines with positional data in `extractor/doclingAdapter.js` and adjust `citations.js`.
 - For multimodal verification with GGUF, run llama.cpp server locally and set `VERIFIER_ENGINE=llama`.
+ - For hybrid figure routing with Granite Vision, set `VISION_URL` + `VISION_MODEL` and ensure Docling service exposes `/signals` + `/render-regions`.
  - Batch API: POST `/api/process-batch` with multipart `files[]` or JSON `{ paths: [...] }` returns per-file results.

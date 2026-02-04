@@ -19,6 +19,7 @@ import { detectEquipment } from './services/detectors/equipment.js';
 import { chunkDocument } from './services/chunker.js';
 import { summarizeChunk } from './services/slm/slmClient.js';
 import { moderateText } from './services/moderation/guardian.js';
+import { redactPdf } from './services/extractor/doclingAdapter.js';
 
 // Resolve current file/dir for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -31,6 +32,8 @@ try { version = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version; } catch {
 const app = express();
 const uploadDir = path.join(__dirname, '../../uploads');
 try { fs.mkdirSync(uploadDir, { recursive: true }); } catch { }
+const redactedDir = path.join(uploadDir, 'redacted');
+try { fs.mkdirSync(redactedDir, { recursive: true }); } catch { }
 const upload = multer({ dest: uploadDir });
 
 const PORT = process.env.PORT || 5055;
@@ -50,6 +53,18 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, version });
+});
+
+app.get('/api/redacted/:name', (req, res) => {
+  const name = String(req.params?.name || '');
+  // Basic traversal guard
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'invalid_name' });
+  const fullPath = path.join(redactedDir, name);
+  if (!fullPath.startsWith(redactedDir)) return res.status(400).json({ error: 'invalid_path' });
+  if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'not_found' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  return res.sendFile(fullPath);
 });
 
 app.post('/api/process', upload.single('file'), async (req, res) => {
@@ -171,9 +186,18 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
     if (route.routed) review_reasons.push('routed_for_verification');
     if (local.confidence < (Number(process.env.ROUTE_LOW) || 0.5)) review_reasons.push('low_confidence');
 
+    const redacted_pdf = await maybeGenerateRedactedPdf({
+      filePath,
+      originalName: req.file?.originalname,
+      extraBoxes: extraction?.multimodal?.redaction_boxes || [],
+      searchTexts: buildSearchTexts({ pii, safety }),
+    });
+
     const result = {
       document_path: docPath || 'uploaded',
       meta: extraction.meta,
+      multimodal: extraction.multimodal || undefined,
+      redacted_pdf,
       engine_info: { model: process.env.LLM_MODEL_NAME || 'local-gguf' },
       guards,
       safety,
@@ -279,7 +303,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       console.log(`PII Findings for chunk ${ch.id}:`, JSON.stringify(piiFindings, null, 2));
 
       send('chunk', { id: ch.id, page: ch.page, start: ch.start, end: ch.end });
-      send('moderation', { id: ch.id, flags: mod.flags, scores: mod.scores, unsafe: mod.unsafe, rationale: mod.rationale || undefined });
+      send('moderation', { id: ch.id, flags: mod.flags, scores: mod.scores, unsafe: mod.unsafe, sensitive: mod.sensitive, rationale: mod.rationale || undefined });
 
       // Send PII findings for this chunk if any detected
       if (piiFindings.length > 0) {
@@ -370,9 +394,18 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       reason: route.reason,
     };
 
+    const redacted_pdf = await maybeGenerateRedactedPdf({
+      filePath,
+      originalName: req.file?.originalname,
+      extraBoxes: extraction?.multimodal?.redaction_boxes || [],
+      searchTexts: buildSearchTexts({ pii, safety }),
+    });
+
     send('final', {
       document_path: docPath || 'uploaded',
       meta: extraction.meta,
+      multimodal: extraction.multimodal || undefined,
+      redacted_pdf,
       pii,
       safety,
       equipment,
@@ -382,6 +415,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       route_reason: route.reason,
       verifier,
       evidence: extraction.evidence,
+      final,
       chunks: { total: chunks.length },
     });
   } catch (err) {
@@ -489,6 +523,81 @@ function extractLabel(obj) {
   // Some models wrap answer within a field like { result: { label: ... } }
   if (obj.result) return extractLabel(obj.result);
   return null;
+}
+
+function buildSearchTexts({ pii, safety }) {
+  const out = [];
+
+  for (const m of (safety?.matches || [])) {
+    const page = Number(m?.page || 0);
+    const text = String(m?.snippet || '').trim();
+    const label = m?.category ? `safety_${m.category}` : 'safety_match';
+    if (!page || !text) continue;
+    out.push({ page, text, label });
+  }
+
+  for (const it of (pii?.items || [])) {
+    const page = Number(it?.page || 0);
+    const text = String(it?.value || '').trim();
+    const label = it?.type ? `pii_${it.type}` : 'pii_match';
+    if (!page || !text) continue;
+    out.push({ page, text, label });
+  }
+
+  // Avoid pathological payload sizes
+  return out.slice(0, 120);
+}
+
+async function maybeGenerateRedactedPdf({ filePath, originalName, extraBoxes, searchTexts }) {
+  const enabled = String(process.env.REDACT_OUTPUT_PDF || 'true').toLowerCase();
+  if (!['1', 'true', 'yes', 'y', 'on'].includes(enabled)) return null;
+  if (!filePath) return null;
+
+  const isPdf = isProbablyPdf({ filePath, originalName });
+  if (!isPdf) return null;
+
+  const boxes = Array.isArray(extraBoxes) ? extraBoxes : [];
+  const searchTextsList = Array.isArray(searchTexts) ? searchTexts : [];
+  const pdfBytes = await redactPdf({ filePath, boxes, searchTexts: searchTextsList, detectPii: true });
+  if (!pdfBytes || !Buffer.isBuffer(pdfBytes) || pdfBytes.length < 20) return null;
+
+  const safeBase = sanitizeFilename(path.basename(originalName || 'document.pdf'));
+  const outName = `redacted_${Date.now()}_${safeBase}`.replace(/\.pdf$/i, '') + '.pdf';
+  const outPath = path.join(redactedDir, outName);
+
+  try {
+    fs.writeFileSync(outPath, pdfBytes);
+  } catch {
+    return null;
+  }
+
+  return {
+    file: outName,
+    url: `/api/redacted/${outName}`,
+    boxes: boxes.length,
+    search_texts: searchTextsList.length,
+    pii: true,
+  };
+}
+
+function isProbablyPdf({ filePath, originalName }) {
+  const nameHint = String(originalName || '').toLowerCase();
+  if (nameHint.endsWith('.pdf')) return true;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(4);
+    fs.readSync(fd, buf, 0, 4, 0);
+    fs.closeSync(fd);
+    return buf.toString('utf8') === '%PDF';
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeFilename(name) {
+  const base = String(name || 'document').trim() || 'document';
+  // allow a-zA-Z0-9._- only
+  return base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
 }
 
 // Serve static assets for both legacy web/ and new root-based UI

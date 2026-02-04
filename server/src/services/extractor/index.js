@@ -3,6 +3,7 @@ import path from 'path';
 import { extractWithDocling } from './doclingAdapter.js';
 import { buildEvidence } from './selectors.js';
 import { mapCitations } from '../citations.js';
+import { augmentWithVision } from './visionRouting.js';
 
 function basicLegibility({ text, numPages }) {
   const charCount = (text || '').length;
@@ -20,6 +21,7 @@ export async function extractDocument({ filePath, originalName, providedText, pr
   let ocrText = '';
   let raw = null;
   let blocks = [];  // Add blocks for page-level PII detection
+  let multimodal = { vision: null, redaction_boxes: [], page_signals: [] };
   let used = 'none';
   const status = [];
   function mark(phase, extra) {
@@ -50,6 +52,34 @@ export async function extractDocument({ filePath, originalName, providedText, pr
     mark('docling_ok', { pages: meta.pages });
   }
 
+  // 1b) Hybrid multimodal routing: only for PDFs, only for figure-heavy pages
+  if (filePath && isProbablyPdf({ filePath, originalName })) {
+    try {
+      const vision = await augmentWithVision({ filePath, blocks, meta });
+      multimodal = {
+        vision: {
+          enabled: vision.enabled,
+          routed: vision.routed || [],
+          regions: vision.regions || [],
+        },
+        redaction_boxes: vision.redaction_boxes || [],
+        page_signals: vision.page_signals || [],
+      };
+
+      if (vision?.markdown) {
+        text = `${text}${vision.markdown}`;
+        mark('vision_supplement_ok', {
+          routed_pages: (vision.routed || []).map(r => r.page),
+          regions: (vision.regions || []).length,
+        });
+      } else {
+        mark('vision_supplement_skip', { reason: (vision?.enabled ? 'no_routed_pages' : 'disabled') });
+      }
+    } catch (e) {
+      mark('vision_supplement_error', { error: String(e?.message || e) });
+    }
+  }
+
   // 2) No OCR/pdf-parse fallbacks here; Docling CLI handles OCR internally via --ocr.
 
   // 3) Provided text (debug/testing) only when no file path
@@ -71,5 +101,19 @@ export async function extractDocument({ filePath, originalName, providedText, pr
   const evidence = mapCitations({ text, evidence: evidenceRaw, meta });
 
   console.log(`[extractor] Extraction complete - source: ${used}, text length: ${text.length}, images: ${meta.images}, blocks: ${blocks.length}`);
-  return { text, meta, evidence, raw, status, blocks };
+  return { text, meta, evidence, raw, status, blocks, multimodal };
+}
+
+function isProbablyPdf({ filePath, originalName }) {
+  const nameHint = String(originalName || '').toLowerCase();
+  if (nameHint.endsWith('.pdf')) return true;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(4);
+    fs.readSync(fd, buf, 0, 4, 0);
+    fs.closeSync(fd);
+    return buf.toString('utf8') === '%PDF';
+  } catch {
+    return false;
+  }
 }

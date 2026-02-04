@@ -23,3 +23,81 @@ export async function extractWithDocling({ filePath }) {
     return null;
   }
 }
+
+export async function getPdfSignals({ filePath }) {
+  const base = process.env.DOCLING_URL;
+  if (!base || !filePath) return null;
+  try {
+    const form = new FormData();
+    form.append('file', fs.createReadStream(filePath));
+    const resp = await axios.post(`${base}/signals`, form, {
+      headers: form.getHeaders(),
+      maxBodyLength: Infinity,
+      timeout: 120000,
+    });
+    return resp.data || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function renderPdfRegions({ filePath, regions, dpi = 220 }) {
+  const base = process.env.DOCLING_URL;
+  if (!base || !filePath) return null;
+  try {
+    const form = new FormData();
+    form.append('file', fs.createReadStream(filePath));
+    form.append('regions', JSON.stringify(regions || []));
+    form.append('dpi', String(dpi || 220));
+    const resp = await axios.post(`${base}/render-regions`, form, {
+      headers: form.getHeaders(),
+      maxBodyLength: Infinity,
+      timeout: 180000,
+    });
+    return resp.data || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function renderPdfPages({ filePath, pages, dpi = 220 }) {
+  const base = process.env.DOCLING_URL;
+  if (!base || !filePath) return null;
+  try {
+    const form = new FormData();
+    form.append('file', fs.createReadStream(filePath));
+    form.append('pages', JSON.stringify(pages || []));
+    form.append('dpi', String(dpi || 220));
+    const resp = await axios.post(`${base}/render-pages`, form, {
+      headers: form.getHeaders(),
+      maxBodyLength: Infinity,
+      timeout: 180000,
+    });
+    return resp.data || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function redactPdf({ filePath, boxes = [], searchTexts = [], detectPii = true }) {
+  const base = process.env.DOCLING_URL;
+  if (!base || !filePath) return null;
+  try {
+    const form = new FormData();
+    form.append('file', fs.createReadStream(filePath));
+    form.append('boxes', JSON.stringify(boxes || []));
+    form.append('search_texts', JSON.stringify(searchTexts || []));
+    form.append('detect_pii', detectPii ? 'true' : 'false');
+
+    const resp = await axios.post(`${base}/redact`, form, {
+      headers: form.getHeaders(),
+      maxBodyLength: Infinity,
+      timeout: 240000,
+      responseType: 'arraybuffer',
+    });
+
+    return Buffer.from(resp.data);
+  } catch {
+    return null;
+  }
+}
