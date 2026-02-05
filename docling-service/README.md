@@ -1,34 +1,44 @@
-Docling-compatible Extraction Service
+# Docling-Compatible Extraction Service
 
-Purpose
-- Provide a simple HTTP endpoint `/extract` that the Node server can call via `DOCLING_URL`.
-- Uses Docling if available; otherwise falls back to PyMuPDF/PDFMiner.
+This service provides a Docling-compatible HTTP API that the Node server calls via `DOCLING_URL`.
 
-Endpoints
-- POST /extract (multipart/form-data)
+## Purpose
+
+- Provide a simple `/extract` endpoint for text + metadata extraction
+- Provide layout/signal endpoints used for optional vision routing and redaction workflows
+- Prefer Docling when available; fall back to other PDF tooling as needed
+
+## Endpoints
+
+- `POST /extract` (multipart/form-data)
   - field: `file` (PDF)
-  - returns JSON: `{ pages: number, text: string, blocks: [{text:string}] }`
-- POST /signals (multipart/form-data)
+  - returns JSON: `{ pages: number, text: string, blocks: [{ text: string, page?: number }] }`
+- `POST /signals` (multipart/form-data)
   - field: `file` (PDF)
-  - returns JSON with per-page layout signals (text/image coverage + figure bboxes) for hybrid VLM routing
-- POST /render-pages (multipart/form-data)
-  - field: `file` (PDF)
-  - fields: `pages` (JSON array, 1-based), `dpi` (int)
-  - returns JSON with base64 PNGs for requested pages
-- POST /render-regions (multipart/form-data)
-  - field: `file` (PDF)
-  - fields: `regions` (JSON array of {id,page,bbox}), `dpi` (int)
-  - returns JSON with base64 PNGs for requested regions
-- POST /redact (multipart/form-data)
+  - returns per-page layout signals (text/image coverage + figure bounding boxes)
+- `POST /render-pages` (multipart/form-data)
   - field: `file` (PDF)
   - fields:
-    - `detect_pii` (true/false) to auto-detect common PII tokens and redact them
-    - `boxes` (JSON array of {page,bbox,label}) for caller-provided redaction regions (e.g., sensitive figures)
-    - `search_texts` (JSON array of {page,text,label}) to locate and redact exact text snippets (best-effort)
-  - returns redacted PDF bytes (application/pdf)
-- GET /health
+    - `pages` (JSON array, 1-based)
+    - `dpi` (int)
+  - returns JSON with base64 PNGs for requested pages
+- `POST /render-regions` (multipart/form-data)
+  - field: `file` (PDF)
+  - fields:
+    - `regions` (JSON array of `{ id, page, bbox }`)
+    - `dpi` (int)
+  - returns JSON with base64 PNGs for requested regions
+- `POST /redact` (multipart/form-data)
+  - field: `file` (PDF)
+  - fields:
+    - `detect_pii` (true/false): auto-detect common PII tokens and redact them
+    - `boxes` (JSON array): `{ page, bbox, label }` redaction regions (e.g., sensitive figures)
+    - `search_texts` (JSON array): `{ page, text, label }` exact-text redaction (best effort)
+  - returns a redacted PDF (content-type `application/pdf`)
+- `GET /health`
 
-Config (env)
+## Configuration (environment)
+
 - `EXTRACT_PIPELINE=docling_cli|python|vlm_cli` (default: `docling_cli`)
 - If using `docling_cli`, these are forwarded to the Docling CLI:
   - `DOCLING_TO=md|json|html|text` (default: `md`)
@@ -37,12 +47,22 @@ Config (env)
   - `DOCLING_TABLES=1|0` (default: `1`)
   - `DOCLING_PDF_BACKEND=pypdfium2|dlparse_v1|dlparse_v2|dlparse_v4` (optional)
 
-Run (standalone)
-- `pip install -r requirements.txt && pip install docling || true`
-- `uvicorn main:app --host 0.0.0.0 --port 7000`
+## Run (standalone)
 
-Docker
-- Built and run via repo root `docker compose up --build`.
+```bash
+pip install -r requirements.txt
+pip install docling || true
+uvicorn main:app --host 0.0.0.0 --port 7000
+```
 
-Notes
-- This service aims to be API-compatible with the Node adapter. For full Docling layout/markdown fidelity, ensure the `docling` package installs successfully in the image.
+## Docker
+
+Built and run via repo root:
+
+```powershell
+docker compose up -d --build docling
+```
+
+## Notes
+
+For maximum Docling fidelity, ensure the `docling` package installs successfully in the image.

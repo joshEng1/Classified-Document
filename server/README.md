@@ -1,58 +1,74 @@
-Doc Classifier Service
+# Doc Classifier Service (`server/`)
 
-Overview
-- End-to-end pipeline per AGENTS.md:
-  - Preprocessing checks (legibility, page count).
-  - Extraction: Docling REST (if configured), pdf-parse, OCR fallback.
-  - Guards: class-specific cues.
-  - Local classifier: TF-IDF linear model (optional) with heuristic fallback.
-  - Routing: decide whether to call verifier.
-  - Verifier: OpenAI or llama.cpp (GGUF) via HTTP with dynamic prompts.
-  - Evidence + citations (basic heuristics, expand via Docling when available).
-- Simple React (CDN) UI at `/` for upload and viewing results.
+Node/Express API server that orchestrates extraction, guard signals, PII detection, and classification/verification. It also serves the static UI from the repo’s `public/` directory when running from Docker or locally.
 
-Run (after npm install)
-1) cd server && cp .env.example .env
-2) Set `OPENAI_API_KEY` or `LLAMA_URL` and choose `VERIFIER_ENGINE=openai|llama`.
-3) npm install
-4) npm start (serves UI and API on PORT, default 5055)
+## Pipeline (high level)
 
-Run with Docker Compose (includes Docling service)
-1) Ensure Docker is installed.
-2) From repo root: `docker compose up --build`
-3) Open http://localhost:5055 and upload a PDF.
-   - The server uses the bundled Docling-compatible service at http://docling:7000 automatically.
+- Extraction (Docling REST; optional OCR fallback)
+- Guard signals
+- PII detection and optional redaction
+- Local classification (heuristic or llama.cpp)
+- Optional second-pass verification (llama.cpp or OpenAI)
 
-API
-- POST `/api/process` (multipart/form-data):
-  - `file`: PDF file
-  - Response: JSON with `meta`, `guards`, `evidence`, `local`, `routed`, `verifier`, `final`.
+Architecture and design notes live in `AGENTS.md` at the repo root.
 
-Models
-- Optional linear model at `server/models/tfidf_svm.json` with fields:
-  - `classes`: ["Internal Memo", "Employee Application", "Invoice", "Public Marketing Document", "Other"]
-  - `vocab`: ["token1", ...]
-  - `W`: 2D weight array (numClasses x vocabSize)
-  - `b`: bias array (numClasses)
-If absent, heuristic classifier is used.
+## Run Locally
 
-Docling integration
-- Configure `DOCLING_URL` to a REST service that accepts multipart file upload at `/extract` and returns JSON with `text` (or `blocks[].text`) and `pages`.
+```powershell
+cd server
+npm install
+Copy-Item .env.example .env
+npm run dev
+```
 
-OCR
-- If `tesseract` CLI is available in PATH, OCR is attempted for scanned/empty PDFs.
+When running locally, you usually still run Docling via Docker:
 
-llama.cpp
-- Start server: `./server -m model.Q4_K_M.gguf --ctx-size 2048 --port 8080`
-- Set `VERIFIER_ENGINE=llama` and `LLAMA_URL=http://localhost:8080`.
+```powershell
+docker compose up -d docling
+```
 
-Frontend (no build)
-- Static files in `/web` use React via CDNs. Upload a PDF and review pipeline outputs.
+## Run with Docker Compose
 
-Dataset distillation (optional)
-- Convert evidence payloads to instruction JSONL for fine-tuning a small LLM:
-  - `node server/scripts/build-dataset.js payloads out.jsonl`
-  - Use your SFT tool (Axolotl/Unsloth) to train and then convert to GGUF for llama.cpp.
+From the repo root:
 
-Notes
-- For robust citations (bbox/page spans), prefer Docling or PDF engines that return positional data and map selected evidence to page indices.
+```powershell
+docker compose up -d --build
+```
+
+Then open `http://localhost:5055/`.
+
+## API
+
+- `GET /health` (and `GET /api/health`)
+- `POST /api/process` (multipart/form-data)
+  - field: `file` (PDF)
+- `POST /api/process-batch`
+  - multipart `files[]`, or (optional) JSON `{"paths":[...]}` when enabled via `ALLOW_BATCH_PATHS=true`
+
+## Models
+
+### llama.cpp (recommended)
+
+Run a compatible OpenAI-style server locally (default port 8080) and set:
+
+- `VERIFIER_ENGINE=llama`
+- `LLAMA_URL=http://localhost:8080` (local dev) or `http://host.docker.internal:8080` (Docker)
+
+### Optional linear model
+
+An optional TF-IDF linear model can be placed at `server/models/tfidf_svm.json`:
+
+- `classes`: string[]
+- `vocab`: string[]
+- `W`: number[][] (numClasses x vocabSize)
+- `b`: number[] (numClasses)
+
+If absent, a heuristic classifier is used.
+
+## Docling Integration
+
+Configure `DOCLING_URL` to a REST service that accepts multipart upload at `/extract` and returns JSON containing `text` and `pages` (and optionally `blocks[]`).
+
+## OCR
+
+If `tesseract` is available in `PATH`, OCR is attempted for scanned/empty PDFs.

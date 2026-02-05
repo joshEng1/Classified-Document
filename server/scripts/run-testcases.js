@@ -211,9 +211,10 @@ async function main() {
     }
   }
 
-  const outDir = path.join(repoRoot, 'server', 'testcases');
+  const outDir = path.join(repoRoot, '.run', 'testcases');
   const outPath = path.join(outDir, `results_${Date.now()}.json`);
   try {
+    fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(outPath, JSON.stringify({ passed, failed, skipped, at: new Date().toISOString(), results }, null, 2));
     console.log(`Wrote results: ${outPath}`);
   } catch { }

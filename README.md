@@ -1,112 +1,102 @@
-# Classification Document Analyzer - Datathon
+# Classification Document Analyzer (Datathon)
 
-## 📚 Documentation
+Document classification pipeline with:
 
-### 🆕 New Users - Start Here!
-- **[QUICK-START-NVIDIA.md](QUICK-START-NVIDIA.md)** - **NVIDIA GPU users** (most common) - 30 min setup
-- **[QUICK-START-AMD.md](QUICK-START-AMD.md)** - AMD GPU users - 30 min setup
+- Extraction via Docling (container) plus OCR fallback (if `tesseract` is installed)
+- Guard signals + optional PII detection and redaction
+- Local classification (heuristic or llama.cpp) with optional second-pass verification (llama.cpp or OpenAI)
+- Static web UI served by the Node server
 
-### 📖 Detailed Guides
-- **[NVIDIA-SETUP.md](NVIDIA-SETUP.md)** - Complete NVIDIA CUDA setup guide
-- **[GPU-SETUP.md](GPU-SETUP.md)** - AMD Vulkan setup guide (original)
-- **[AGENTS.md](AGENTS.md)** - AI agent implementation details and requirements
+## Documentation
 
-### 🔧 Reference
-- **[QUICKREF.md](QUICKREF.md)** - Quick command reference
-- **[SETUP.md](SETUP.md)** - General setup documentation
+- Start here: `START_HERE.md`
+- First-time setup checklist: `CHECKLIST.md`
+- Detailed setup and troubleshooting: `SETUP.md`
+- Daily command reference: `QUICKREF.md`
+- GPU notes: `GPU-SETUP-WINDOWS.md`, `GPU-SETUP.md`
+- Implementation details: `AGENTS.md`
 
-## 🚀 Quick Start
+## Quick Start (Docker + local llama.cpp)
 
-### For New Developers
+Prereqs: Docker Desktop, Node.js 18+ (for local dev), and a GGUF model file in `models/`.
 
-**Have an NVIDIA GPU?** (RTX 20/30/40 series, Tesla, etc.)
-```powershell
-# Check what you need to install
-.\setup-nvidia.ps1
-
-# Then follow: QUICK-START-NVIDIA.md
-```
-
-**Have an AMD GPU?** (Radeon RX 6000/7000 series)
-```powershell
-# Use AMD Vulkan setup
-# See: GPU-SETUP.md
-```
-
-### For Existing Users
+1) Create config:
 
 ```powershell
-# NVIDIA GPU users:
-.\start-gpu-server-nvidia.ps1    # Terminal 1: GPU server
-docker compose up                 # Terminal 2: Other services
-
-# AMD GPU users:
-.\start-gpu-server.ps1            # Terminal 1: GPU server  
-docker compose up                 # Terminal 2: Other services
-
-# Test everything
-.\test-classification.ps1
-
-# Stop everything
-docker compose down
-# Then Ctrl+C in GPU terminal
+Copy-Item server\.env.example server\.env
 ```
 
-## 📖 Overview
+2) Edit `server\.env` and set at least `LLM_MODEL_NAME` to the GGUF filename you placed in `models\`.
 
-End-to-end document classification system with:
-- **Pre-processing checks** (legibility, page/image count)
-- **Extraction** via Docling + OCR for documents with images
-- **Guard rules** and PII detection with redaction
-- **Local GPU-accelerated LLM** (AMD Vulkan) for classification
-- **Verifier** for second-pass validation
-- **Citation-based evidence** for audit trails
-- **Web UI** for easy document upload and results
-- **Safety monitoring** for unsafe content detection
+3) Start llama.cpp on the host (Windows):
 
-## 🏗️ Architecture
-
-```
-Web UI (port: 5055) 
-    ↓
-Classification Server (port: 5055)
-    ↓
-GPU Server - llama.cpp (port: 8080) + Docling (port: 7000)
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-model-servers.ps1 -NoVision -NoGuardian
 ```
 
-## ⚙️ Configuration
-- Prompts: `server/src/config/prompts.json` (classifier/verifier and class rules).
-- Thresholds: `ROUTE_LOW`, `AUTO_ACCEPT` in `.env`.
-- Verifier engine: `VERIFIER_ENGINE=openai|llama`. For llama.cpp, set `LLAMA_URL`.
-- Docling REST (optional): set `DOCLING_URL` if you have a Docling server.
- - PII Redaction: `REDACT_PII=true|false`.
- - Redacted PDF output: `REDACT_OUTPUT_PDF=true|false` (burned-in black boxes; served via `/api/redacted/:name`).
- - Cross-verify with two LLMs: `CROSS_VERIFY=true` (requires both engines configured).
- - Offline mode: `OFFLINE_MODE=true` to avoid any external network.
+Or start it manually (no helper script):
 
-Local classifier
-- Optional linear TF-IDF model can be placed at `server/models/tfidf_svm.json`.
-- If missing, a heuristic classifier based on guard signals is used.
+```powershell
+.\llamacpp\llama-server.exe --host 0.0.0.0 --port 8080 -m .\models\<your-model>.gguf --ctx-size 8192 --no-jinja
+```
 
-Front end
-- Enterprise UI is served by the Node server from `public/` at `http://localhost:5055/`.
- - Tailwind-like utilities are vendored as `public/tailwind.css` so the UI runs offline (no CDN).
- - Manual “highlight to redact” tool renders PDF pages and lets reviewers draw redaction boxes, generating a new burned-in redacted PDF.
- - Optional rebuild: `powershell -ExecutionPolicy Bypass -File .\\scripts\\build-tailwind.ps1` (requires `tailwindcss` available to `npx`).
+4) Start the Docling + server containers:
 
-Notes
-- For robust citations (page/bbox), integrate Docling or PDF engines with positional data in `extractor/doclingAdapter.js` and adjust `citations.js`.
-- For multimodal verification with GGUF, run llama.cpp server locally and set `VERIFIER_ENGINE=llama`.
- - For hybrid figure routing with Granite Vision, set `VISION_URL` + `VISION_MODEL` and ensure Docling service exposes `/signals` + `/render-regions`.
- - Batch API: POST `/api/process-batch` with multipart `files[]` or JSON `{ paths: [...] }` returns per-file results.
+```powershell
+docker compose up -d --build
+```
 
-Dev (auto-reload with Docker)
-- Use `docker-compose.dev.yml` to bind-mount source and enable reload:
-  ```powershell
-  docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
-  ```
+5) Open: `http://localhost:5055/`
 
-Local model servers (Windows)
-- Start llama.cpp servers for Vision/Guardian (and optional SLM) without typing each command:
-  - `powershell -ExecutionPolicy Bypass -File .\scripts\start-model-servers.ps1` (reads ports/models from `server/.env` when available)
-  - Stop: `powershell -ExecutionPolicy Bypass -File .\scripts\stop-model-servers.ps1`
+## Architecture
+
+```
+Browser
+  -> http://localhost:5055/        (web UI + API)
+  -> server (Docker or local)
+      -> Docling http://localhost:7000 (Docker)
+      -> llama.cpp http://localhost:8080 (host)
+```
+
+## Development
+
+- Run the server locally (fast restart, still uses Docker Docling):
+
+```powershell
+docker compose up -d docling
+cd server
+npm install
+Copy-Item .env.example .env
+npm run dev
+```
+
+- Docker bind-mount dev mode (auto-reload):
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+## Configuration
+
+- Environment: `server/.env` (copy from `server/.env.example`)
+- Prompts/rules: `server/src/config/prompts.json`
+- Common env vars:
+  - `PORT` (server port, default 5055)
+  - `VERIFIER_ENGINE=llama|openai`
+  - `LLAMA_URL` (llama.cpp server URL)
+  - `DOCLING_URL` (Docling REST URL; Docker Compose sets this to `http://docling:7000` inside the container)
+  - `VERIFY_SECOND_PASS=true|false` (Docker Compose defaults this to true)
+  - `REDACT_PII=true|false` and `REDACT_OUTPUT_PDF=true|false`
+  - `OFFLINE_MODE=true|false`
+
+## API
+
+- `GET /health` (and `GET /api/health`)
+- `POST /api/process` (multipart `file=<pdf>`)
+- `POST /api/process-batch` (multipart `files[]` or JSON `{"paths":[...]}`)
+- `GET /api/redacted/:name` (download a generated redacted PDF, if enabled)
+
+## Notes / Gotchas
+
+- Renaming the repo folder changes Docker Compose’s default project name, which changes container names. If you rely on stable names, use `docker compose -p <name> ...` or set `COMPOSE_PROJECT_NAME`.
+- `start-system.sh` is a WSL helper but currently has a hard-coded `PROJECT_DIR` that must match your local path.

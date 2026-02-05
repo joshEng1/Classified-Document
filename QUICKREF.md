@@ -1,171 +1,81 @@
-# 📌 Quick Reference - Common Commands
+# Quick Reference
 
-Quick command reference for daily development work.
+Common commands for running and developing the system.
 
-## 🚀 Starting & Stopping
+## Start / Stop
+
+Start llama.cpp on the host (Windows):
 
 ```powershell
-# Start everything
-.\start-all.ps1
-
-# Stop everything
-.\stop-all.ps1
-
-# Check system status
-.\check-system.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\start-model-servers.ps1 -NoVision -NoGuardian
 ```
 
-## 🧪 Testing
+Start Docling + API server:
 
 ```powershell
-# Run all tests
-.\test-classification.ps1
-
-# Detailed test output
-.\test-classification.ps1 -Detailed
-
-# With server logs
-.\test-classification.ps1 -ShowLogs
+docker compose up -d --build
 ```
 
-## 🛠️ Development
+Stop containers:
 
 ```powershell
-# Run server locally (faster for development)
-.\start-server-local.ps1
-
-# Rebuild Docker containers after code changes
-docker compose build server
-docker compose up -d
-
-# View server logs
-docker logs classification-document-analyzer-datathon-server-1 --tail 50
-docker logs classification-document-analyzer-datathon-server-1 -f  # Follow logs
+docker compose down
 ```
 
-## 🔍 Debugging
+Stop host model servers:
 
 ```powershell
-# Check GPU server
-Invoke-WebRequest http://localhost:8080/health
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-model-servers.ps1
+```
 
-# Check classification server
+## Logs and Health
+
+```powershell
+docker compose logs -f server
+docker compose logs -f docling
+```
+
+```powershell
 Invoke-WebRequest http://localhost:5055/health
-
-# Check Docling service
 Invoke-WebRequest http://localhost:7000/health
-
-# List running Docker containers
-docker ps
-
-# Restart a specific service
-docker compose restart server
+Invoke-WebRequest http://localhost:8080/v1/models
 ```
 
-## 📊 Testing Individual Documents
+## Local Development (no Docker for the Node server)
 
 ```powershell
-# Test a single document via API
-$file = "path\to\document.pdf"
-$form = @{ file = Get-Item $file }
-$result = Invoke-RestMethod -Uri "http://localhost:5055/api/process" -Method Post -Form $form
-$result | ConvertTo-Json
-```
-
-## 🔄 Git Operations
-
-```powershell
-# Check status
-git status
-
-# Commit changes
-git add .
-git commit -m "Your message"
-
-# Push to GitHub
-git push
-
-# Pull latest changes
-git pull
-
-# Create a new branch
-git checkout -b feature/your-feature-name
-```
-
-## 📝 File Locations
-
-| Component | Location |
-|-----------|----------|
-| Server code | `server/src/` |
-| Web UI | `web/` |
-| Configuration | `server/.env` |
-| Prompts | `server/src/config/prompts.json` |
-| Model | `models/*.gguf` |
-| Sample PDFs | `HitachiDS_Datathon_Challenges_Package/` |
-| Logs | `docker logs ...` |
-
-## 🌐 Service URLs
-
-| Service | URL | Purpose |
-|---------|-----|---------|
-| Web UI | `file:///path/to/index.html` | User interface |
-| API | `http://localhost:5055` | Classification API |
-| GPU Server | `http://localhost:8080` | LLM inference |
-| Docling | `http://localhost:7000` | PDF extraction |
-
-## ⚙️ Environment Variables
-
-Edit `server/.env`:
-
-```properties
-PORT=5055                          # Classification server port
-LLAMA_URL=http://localhost:8080    # GPU server
-DOCLING_URL=http://localhost:7000  # Docling service
-LOCAL_CLASSIFIER=llama             # Classifier engine
-VERIFIER_ENGINE=llama              # Verifier engine
-```
-
-## 🐛 Common Issues
-
-| Issue | Solution |
-|-------|----------|
-| Port already in use | `Get-NetTCPConnection -LocalPort 5055` |
-| GPU server not responding | Check `.\start-gpu-server.ps1` is running |
-| Docker not starting | Restart Docker Desktop |
-| Model not found | Check `models/` directory |
-| OCR failing | Install Tesseract: `choco install tesseract` |
-
-## 📦 Package Management
-
-```powershell
-# Install Node dependencies
+docker compose up -d docling
 cd server
 npm install
-
-# Update dependencies
-npm update
-
-# Check for outdated packages
-npm outdated
+Copy-Item .env.example .env
+npm run dev
 ```
 
-## 🔧 Advanced
+## API Quick Tests
 
 ```powershell
-# Rebuild llama.cpp
-.\build-llama.ps1
-
-# Run custom llama.cpp command
-cd tools\llama\build\bin
-.\llama-cli.exe --help
-
-# Clean Docker system
-docker system prune -a
-
-# Remove all stopped containers
-docker container prune
+# Single PDF
+$file = "path\\to\\document.pdf"
+$form = @{ file = Get-Item $file }
+$result = Invoke-RestMethod -Uri "http://localhost:5055/api/process" -Method Post -Form $form
+$result | ConvertTo-Json -Depth 6
 ```
 
----
+## Integration Testcases
 
-💡 **Pro Tip**: Keep this file open in a separate window while developing!
+```powershell
+cd server
+npm run test:cases
+```
+
+Results are written under `.run/testcases/`.
+
+## Key Paths
+
+| Item | Path |
+|------|------|
+| API server | `server/src/index.js` |
+| Prompts/rules | `server/src/config/prompts.json` |
+| Web UI (static) | `public/` |
+| Docling service | `docling-service/` |
+| Model files | `models/*.gguf` |

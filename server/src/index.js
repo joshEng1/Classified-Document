@@ -37,21 +37,67 @@ const redactedDir = path.join(uploadDir, 'redacted');
 try { fs.mkdirSync(redactedDir, { recursive: true }); } catch { }
 const sessionsDir = path.join(uploadDir, 'sessions');
 try { fs.mkdirSync(sessionsDir, { recursive: true }); } catch { }
-const upload = multer({ dest: uploadDir });
 
-const PORT = process.env.PORT || 5055;
+const PORT = Number(process.env.PORT) || 5055;
+
+app.disable('x-powered-by');
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
+
+function parseCsv(value) {
+  return String(value || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+const corsAllowAll = String(process.env.CORS_ALLOW_ALL || 'false').toLowerCase() === 'true';
+const corsAllowNull = String(process.env.CORS_ALLOW_NULL || 'false').toLowerCase() === 'true';
+const corsOrigins = (() => {
+  const v = parseCsv(process.env.CORS_ORIGINS);
+  if (v.length) return v;
+  return [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`];
+})();
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (corsAllowAll) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (origin) {
+    if (origin === 'null' && corsAllowNull) {
+      res.setHeader('Access-Control-Allow-Origin', 'null');
+      res.setHeader('Vary', 'Origin');
+    } else if (corsOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
 app.use(express.json({ limit: '4mb' }));
 
-// Enable CORS for local file:// access
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
+const maxUploadMb = Math.max(1, Number(process.env.MAX_UPLOAD_MB || '25') || 25);
+const upload = multer({
+  dest: uploadDir,
+  limits: { fileSize: maxUploadMb * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const name = String(file?.originalname || '').toLowerCase();
+    const mime = String(file?.mimetype || '').toLowerCase();
+    const looksPdf = name.endsWith('.pdf') || mime === 'application/pdf';
+    if (!looksPdf) return cb(Object.assign(new Error('Only PDF uploads are allowed'), { code: 'UNSUPPORTED_FILETYPE' }));
+    cb(null, true);
+  },
 });
 
 app.get('/health', (_req, res) => {
@@ -445,13 +491,84 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
   }
 });
 
+function isPathWithinRoot(candidatePath, rootPath) {
+  try {
+    const rel = path.relative(rootPath, candidatePath);
+    return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+function resolveBatchPathItems(rawPaths) {
+  const envRoots = parseCsv(process.env.BATCH_PATH_ROOTS).map(r => path.resolve(r));
+  const defaultRoots = [
+    path.resolve(process.cwd(), 'assets', 'documents'),
+    path.resolve(process.cwd(), 'uploads'),
+  ].filter(p => {
+    try { return fs.existsSync(p); } catch { return false; }
+  });
+  const allowedRoots = envRoots.length ? envRoots : defaultRoots;
+
+  const rejected = [];
+  const items = [];
+
+  for (const p of rawPaths || []) {
+    const raw = String(p || '').trim();
+    if (!raw) continue;
+    const resolved = path.resolve(raw);
+    const lower = resolved.toLowerCase();
+    if (!lower.endsWith('.pdf')) {
+      rejected.push({ path: raw, reason: 'not_pdf' });
+      continue;
+    }
+    if (!allowedRoots.some(root => isPathWithinRoot(resolved, root))) {
+      rejected.push({ path: raw, reason: 'outside_allowed_roots' });
+      continue;
+    }
+    try {
+      if (!fs.existsSync(resolved)) {
+        rejected.push({ path: raw, reason: 'not_found' });
+        continue;
+      }
+    } catch {
+      rejected.push({ path: raw, reason: 'not_accessible' });
+      continue;
+    }
+    items.push({ path: resolved, originalname: path.basename(resolved) });
+  }
+
+  return { allowedRoots, items, rejected };
+}
+
 // Batch processing endpoint: accepts multiple files via multipart or JSON paths
 app.post('/api/process-batch', upload.array('files'), async (req, res) => {
   try {
-    const files = (req.files || []).map(f => ({ path: f.path, originalname: f.originalname }));
+    const files = (req.files || []).map(f => ({ path: f.path, originalname: f.originalname, temp: true }));
     const jsonPaths = Array.isArray(req.body?.paths) ? req.body.paths : [];
-    const items = files.length ? files : jsonPaths.map(p => ({ path: p, originalname: path.basename(p) }));
-    if (!items.length) return res.status(400).json({ error: 'no_inputs', detail: 'Provide files[] or paths array' });
+
+    let items = files.length ? files : [];
+    if (!items.length && jsonPaths.length) {
+      const allowPaths = String(process.env.ALLOW_BATCH_PATHS || 'false').toLowerCase() === 'true';
+      if (!allowPaths) {
+        return res.status(400).json({
+          error: 'paths_disabled',
+          detail: 'Batch JSON paths are disabled by default. Upload files[] or set ALLOW_BATCH_PATHS=true.',
+        });
+      }
+      const resolved = resolveBatchPathItems(jsonPaths);
+      if (!resolved.items.length) {
+        return res.status(400).json({
+          error: 'no_valid_paths',
+          detail: 'No valid PDF paths were provided (must be within allowed roots).',
+          allowed_roots: resolved.allowedRoots,
+          rejected: resolved.rejected.slice(0, 25),
+        });
+      }
+      items = resolved.items;
+    }
+
+    if (!items.length) return res.status(400).json({ error: 'no_inputs', detail: 'Provide files[] (PDF uploads) or enable paths input.' });
     const out = [];
     for (const it of items) {
       const r = await fetchLikeProcess(it.path, it.originalname);
@@ -868,6 +985,19 @@ const webDir = resolveStaticDir('web', [
 if (webDir) {
   app.use(express.static(webDir));
 }
+
+// Centralized error handler (e.g., multer limits)
+app.use((err, _req, res, _next) => {
+  const code = String(err?.code || '');
+  if (code === 'UNSUPPORTED_FILETYPE') {
+    return res.status(415).json({ error: 'unsupported_filetype', detail: String(err?.message || 'unsupported file type') });
+  }
+  if (err?.name === 'MulterError' || code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ error: 'upload_error', detail: String(err?.message || 'upload error') });
+  }
+  console.error(err);
+  return res.status(500).json({ error: 'internal_error' });
+});
 
 app.listen(PORT, () => {
   console.log(`Doc classifier service listening on http://localhost:${PORT}`);

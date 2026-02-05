@@ -1,123 +1,81 @@
-# ✅ First Time Setup Checklist
+# First-Time Setup Checklist
 
-Use this checklist to ensure everything is set up correctly before running the system.
+Use this checklist to get a clean local environment and verify the system end-to-end.
 
-## 📋 Prerequisites Installation
+## Prerequisites
 
-- [ ] **Windows 10/11** installed
-- [ ] **PowerShell 7+** installed (check: `$PSVersionTable.PSVersion`)
-- [ ] **Node.js v18+** installed (check: `node --version`)
-- [ ] **Docker Desktop** installed and running (check: `docker --version`)
-- [ ] **Git** installed (optional but recommended)
-- [ ] **Python 3.9+** installed (for Docling service)
+- [ ] Windows 10/11
+- [ ] PowerShell 7+ (`$PSVersionTable.PSVersion`)
+- [ ] Node.js 18+ (`node --version`)
+- [ ] Docker Desktop (`docker --version`) and running
+- [ ] Git (recommended)
 
-## 📥 Repository Setup
+## Repo Setup
 
-- [ ] Clone repository: `git clone <repo-url>`
-- [ ] Navigate to directory: `cd Classification-Document-Analyzer-Datathon`
-- [ ] Run setup verification: `.\verify-setup.ps1`
+- [ ] Clone the repo and `cd` into it
+- [ ] Install server dependencies:
 
-## 📦 Dependencies
+```powershell
+cd server
+npm install
+cd ..
+```
 
-- [ ] Install Node modules:
-  ```powershell
-  cd server
-  npm install
-  cd ..
-  ```
+## Configuration
 
-## ⚙️ Configuration
+- [ ] Copy `server/.env.example` to `server/.env`:
 
-- [ ] Create `.env` file:
-  ```powershell
-  cd server
-  Copy-Item .env.example .env
-  cd ..
-  ```
-- [ ] Verify `.env` settings (default should work)
+```powershell
+Copy-Item server\.env.example server\.env
+```
 
-## 🤖 Model Setup
+- [ ] Put a GGUF model file in `models/`
+- [ ] Set `LLM_MODEL_NAME` in `server/.env` to the GGUF filename
 
-- [ ] Create `models/` directory if it doesn't exist
-- [ ] Download Qwen3-1.7B-IQ4_NL.gguf model (lightweight mobile-friendly)
-- [ ] Place model in `models/` directory
-- [ ] Verify model path in `start-gpu-server.ps1`
+## Optional: OCR Support
 
-## 🔧 Build Tools (if needed)
+OCR fallback is used only if `tesseract` is installed and available in `PATH`.
 
-- [ ] Check if `tools/llama/build/bin/llama-server.exe` exists
-- [ ] If not, run: `.\build-llama.ps1`
-- [ ] Verify Vulkan support: `.\tools\llama\build\bin\llama-server.exe --version`
+- [ ] Install Tesseract (optional):
 
-## 🧪 Optional: OCR Support
+```powershell
+choco install tesseract
+```
 
-- [ ] Install Tesseract OCR (optional):
-  ```powershell
-  choco install tesseract
-  ```
-  Or download from: https://github.com/UB-Mannheim/tesseract/wiki
+## Start the System
 
-## ✅ Verification
+- [ ] Start llama.cpp on the host:
 
-- [ ] Run setup verification: `.\verify-setup.ps1`
-- [ ] All checks should pass or show warnings only
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-model-servers.ps1 -NoVision -NoGuardian
+```
 
-## 🚀 First Run
+- [ ] Start Docling + API server:
 
-- [ ] Start all services: `.\start-all.ps1`
-- [ ] Wait for services to start (check terminal output)
-- [ ] Open web interface: `index.html`
-- [ ] Run tests: `.\test-classification.ps1`
-- [ ] Run integration test cases (Docling required):
-  ```powershell
-  cd server
-  npm run test:cases
-  cd ..
-  ```
+```powershell
+docker compose up -d --build
+```
 
-## 🎯 Expected Results
+- [ ] Open `http://localhost:5055/` and upload a PDF
 
-After completing setup and running tests, you should see:
+## Validate
 
-- ✅ GPU Server running on port 8080
-- ✅ Classification Server running on port 5055
-- ✅ Docling Service running on port 7000
-- ✅ Web interface accessible
-- ✅ At least 1/3 test cases passing
+- [ ] Server health:
+  - [ ] `http://localhost:5055/health`
+  - [ ] `http://localhost:7000/health`
+  - [ ] `http://localhost:8080/v1/models`
 
-## 🐛 Troubleshooting
+- [ ] Run integration testcases:
 
-If any step fails:
+```powershell
+cd server
+npm run test:cases
+```
 
-1. Check the specific error message
-2. Review [SETUP.md](SETUP.md) for detailed instructions
-3. Check [QUICKREF.md](QUICKREF.md) for common commands
-4. Review logs: `docker logs classification-document-analyzer-datathon-server-1`
-5. Verify GPU server: `curl http://localhost:8080/health`
+Results are written under `.run/testcases/`.
 
-## 📝 Common Issues
+## Troubleshooting Quick Checks
 
-| Issue | Solution |
-|-------|----------|
-| Node modules not installing | Delete `node_modules/` and `package-lock.json`, then `npm install` |
-| Docker not starting | Restart Docker Desktop |
-| GPU server fails | Check AMD GPU drivers are updated |
-| Model not found | Verify model path in `start-gpu-server.ps1` |
-| Port already in use | Stop conflicting process or change port in `.env` |
-
-## 🎓 Next Steps
-
-Once setup is complete:
-
-1. Read [SETUP.md](SETUP.md) for detailed usage
-2. Review [QUICKREF.md](QUICKREF.md) for common commands
-3. Explore the code in `server/src/`
-4. Test with sample documents in `HitachiDS_Datathon_Challenges_Package/`
-5. Start developing new features!
-
----
-
-**Need Help?**
-- Check the documentation in `SETUP.md`
-- Review error logs
-- Contact the project maintainer
+- [ ] Docker logs: `docker compose logs -f server`
+- [ ] Port conflicts: `Get-NetTCPConnection -LocalPort 5055,7000,8080`
+- [ ] Model not found: confirm `models/<file>.gguf` exists and `LLM_MODEL_NAME` matches exactly
