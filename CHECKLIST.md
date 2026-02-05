@@ -68,6 +68,12 @@ Use this checklist to ensure everything is set up correctly before running the s
 - [ ] Wait for services to start (check terminal output)
 - [ ] Open web interface: `index.html`
 - [ ] Run tests: `.\test-classification.ps1`
+- [ ] Run integration test cases (Docling required):
+  ```powershell
+  cd server
+  npm run test:cases
+  cd ..
+  ```
 
 ## 🎯 Expected Results
 

@@ -1,0 +1,60 @@
+{
+  "$schema_note": "Minimal integration test cases. Update expectations as you refine prompts/models.",
+  "cases": [
+    {
+      "id": "TC1_public_marketing",
+      "file": "assets/documents/TC1_Sample_Public_Marketing_Document.pdf",
+      "expect": {
+        "policy_sensitivity": "Public",
+        "safe_for_kids": true,
+        "min_pages": 1,
+        "min_images": 0
+      }
+    },
+    {
+      "id": "TC2_employment_application_pii",
+      "file": "assets/documents/TC2_Filled_In_Employement_Application.pdf",
+      "expect": {
+        "policy_sensitivity": "Highly Sensitive",
+        "safe_for_kids": true,
+        "min_pages": 1,
+        "min_images": 0,
+        "pii_total_min": 1,
+        "pii_types_must_include": ["address_like", "phone"]
+      }
+    },
+    {
+      "id": "TC3_internal_memo",
+      "file": "assets/documents/TC3_Sample_Internal_Memo.pdf",
+      "expect": {
+        "policy_sensitivity": "Confidential",
+        "safe_for_kids": true,
+        "min_pages": 1,
+        "min_images": 0
+      }
+    },
+    {
+      "id": "TC4_stealth_fighter_policy",
+      "file": "assets/documents/TC4_ Stealth_Fighter_With_Part_Names.pdf",
+      "expect": {
+        "policy_sensitivity": "Confidential",
+        "safe_for_kids": true,
+        "min_pages": 1,
+        "min_images": 0,
+        "equipment_present_any": ["aircraft", "serial", "part"]
+      }
+    },
+    {
+      "id": "TC5_equipment_and_unsafe",
+      "file": "assets/documents/TC5_Testing_Multiple_Non_Compliance_Categorization.pdf",
+      "requires": { "vision": true },
+      "expect": {
+        "policy_sensitivity": "Confidential",
+        "policy_overall": "Confidential and Unsafe",
+        "safe_for_kids": false,
+        "min_pages": 1,
+        "min_images": 1
+      }
+    }
+  ]
+}

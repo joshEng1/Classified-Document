@@ -28,6 +28,15 @@ Endpoints
   - returns redacted PDF bytes (application/pdf)
 - GET /health
 
+Config (env)
+- `EXTRACT_PIPELINE=docling_cli|python|vlm_cli` (default: `docling_cli`)
+- If using `docling_cli`, these are forwarded to the Docling CLI:
+  - `DOCLING_TO=md|json|html|text` (default: `md`)
+  - `DOCLING_PIPELINE=standard|vlm|asr` (default: `standard`)
+  - `DOCLING_OCR=1|0` (default: `1`)
+  - `DOCLING_TABLES=1|0` (default: `1`)
+  - `DOCLING_PDF_BACKEND=pypdfium2|dlparse_v1|dlparse_v2|dlparse_v4` (optional)
+
 Run (standalone)
 - `pip install -r requirements.txt && pip install docling || true`
 - `uvicorn main:app --host 0.0.0.0 --port 7000`

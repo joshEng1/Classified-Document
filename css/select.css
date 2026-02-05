@@ -1,7 +1,11 @@
 html.docz > body select {
-    border: none;
-    border-radius: var(--docz-border-radius);
-    padding: calc(var(--docz-padding-element) * 0.5) var(--docz-padding-element);
+    background: var(--docz-color-surface-2);
+    border: 1px solid var(--docz-color-border);
+    border-radius: var(--docz-border-radius-sm);
+    color: var(--docz-color-foreground);
+    font: inherit;
+    padding: calc(var(--docz-padding-element) * 0.55) calc(var(--docz-padding-element) * 0.8);
+    box-shadow: var(--docz-shadow-sm);
 }
 
 html.docz > body select:not(:disabled):hover {

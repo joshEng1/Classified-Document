@@ -76,7 +76,7 @@ Copy-Item server/.env.example server/.env
 # Start services
 .\start-all.ps1
 
-# Make code changes in server/src/ or web/
+# Make code changes in server/src/ or public/
 
 # For faster iteration, run server locally:
 .\stop-all.ps1
@@ -122,10 +122,11 @@ Classification-Document-Analyzer-Datathon/
 │   │   └── config/
 │   │       └── prompts.json  # Classification prompts
 │   └── .env                  # Configuration (not in git)
-├── web/                      # Frontend UI
+├── public/                   # Frontend UI (served at http://localhost:5055/)
 │   ├── index.html
-│   ├── main.js
-│   └── styles.css
+│   ├── app.js
+│   ├── tailwind.css
+│   └── app.css
 ├── tools/llama/              # llama.cpp GPU server
 │   └── build/bin/
 ├── models/                   # LLM models (*.gguf)

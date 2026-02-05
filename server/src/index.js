@@ -19,7 +19,8 @@ import { detectEquipment } from './services/detectors/equipment.js';
 import { chunkDocument } from './services/chunker.js';
 import { summarizeChunk } from './services/slm/slmClient.js';
 import { moderateText } from './services/moderation/guardian.js';
-import { redactPdf } from './services/extractor/doclingAdapter.js';
+import { redactPdf, getPdfSignals, renderPdfPages } from './services/extractor/doclingAdapter.js';
+import { loadRedactionRules, addRedactionRule, removeRedactionRule } from './services/redaction/redactionRules.js';
 
 // Resolve current file/dir for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -34,6 +35,8 @@ const uploadDir = path.join(__dirname, '../../uploads');
 try { fs.mkdirSync(uploadDir, { recursive: true }); } catch { }
 const redactedDir = path.join(uploadDir, 'redacted');
 try { fs.mkdirSync(redactedDir, { recursive: true }); } catch { }
+const sessionsDir = path.join(uploadDir, 'sessions');
+try { fs.mkdirSync(sessionsDir, { recursive: true }); } catch { }
 const upload = multer({ dest: uploadDir });
 
 const PORT = process.env.PORT || 5055;
@@ -43,7 +46,7 @@ app.use(express.json({ limit: '4mb' }));
 // Enable CORS for local file:// access
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
@@ -52,6 +55,11 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => {
+  res.json({ ok: true, version });
+});
+
+// Back-compat alias (some docs/UI refer to /api/health)
+app.get('/api/health', (_req, res) => {
   res.json({ ok: true, version });
 });
 
@@ -88,9 +96,9 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
     const pii = detectPII(extraction.text || '', extraction.meta);
     const redacted = pii?.items?.length ? requirePIIRedaction(req) ? redactPII(extraction.text || '') : extraction.text || '' : (extraction.text || '');
     const guards = runGuards({ text: redacted, meta: extraction.meta });
-    const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta });
+    const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta, multimodal: extraction.multimodal });
     const equipment = detectEquipment(extraction.text || '', extraction.meta);
-    const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment });
+    const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment, multimodal: extraction.multimodal });
 
     // 3) Build prompts (used by llama local or verifier)
     const prompts = buildPrompts({
@@ -147,15 +155,15 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
       // offline-first: default to llama; allow double-layered validation
       const cross = String(process.env.CROSS_VERIFY || 'false').toLowerCase() === 'true';
       if (engine === 'llama') {
-        verifier = await verifyWithLlama(updatedPrompts, process.env.LLAMA_URL || 'http://localhost:8080');
+        verifier = await verifyWithLlama({ ...updatedPrompts, temperature }, process.env.LLAMA_URL || 'http://localhost:8080');
         if (cross && process.env.OPENAI_API_KEY) {
-          const other = await verifyWithOpenAI(updatedPrompts, process.env.OPENAI_API_KEY);
+          const other = await verifyWithOpenAI({ ...updatedPrompts, temperature }, process.env.OPENAI_API_KEY);
           verifier = { primary: 'llama', llama: verifier, openai: other, verdict: verifier.verdict || other.verdict };
         }
       } else {
-        verifier = await verifyWithOpenAI(updatedPrompts, process.env.OPENAI_API_KEY);
+        verifier = await verifyWithOpenAI({ ...updatedPrompts, temperature }, process.env.OPENAI_API_KEY);
         if (cross) {
-          const other = await verifyWithLlama(updatedPrompts, process.env.LLAMA_URL || 'http://localhost:8080');
+          const other = await verifyWithLlama({ ...updatedPrompts, temperature }, process.env.LLAMA_URL || 'http://localhost:8080');
           verifier = { primary: 'openai', openai: verifier, llama: other, verdict: verifier.verdict || other.verdict };
         }
       }
@@ -248,6 +256,8 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
   try {
     const filePath = req.file ? req.file.path : null;
     const docPath = req.body.document_path || (req.file ? req.file.originalname : undefined);
+    const temperature = Number.isFinite(Number(req.body?.temperature)) ? Number(req.body.temperature) : undefined;
+    const noImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
     if (!filePath && !req.body.text) {
       send('error', { error: 'No file or text provided' });
       return res.end();
@@ -260,6 +270,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       originalName: req.file?.originalname,
       providedText: req.body.text,
       preferDocling: true,
+      disableVision: noImages,
     });
     send('extract', { meta: extraction.meta, status: extraction.status });
 
@@ -283,6 +294,8 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     const guardianUrl = process.env.GUARDIAN_URL || process.env.LLAMA_URL || 'http://localhost:8080';
     const slmUrl = process.env.SLM_URL || process.env.LLAMA_URL || 'http://localhost:8080';
     let completed = 0;
+    const moderationByChunk = [];
+    const piiByChunk = [];
 
     // Process chunks sequentially to maintain order
     for (const ch of chunks) {
@@ -292,28 +305,30 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       console.log(`Chunk text preview: ${ch.text?.substring(0, 200)}...`);
 
       // Fire all three operations in parallel for this chunk
-      const pSumm = summarizeChunk({ text: ch.text, baseUrl: slmUrl });
+      const pSumm = summarizeChunk({ text: ch.text, baseUrl: slmUrl, temperature });
       const pMod = moderateText({ text: ch.text, baseUrl: guardianUrl });
-      const piiFindings = detectPIIRobust(ch.text, ch.page);
+      const piiFindingsChunk = detectPIIRobust(ch.text, ch.page);
 
       const [summ, mod] = await Promise.all([pSumm, pMod]);
 
       console.log(`SLM Response for chunk ${ch.id}:`, JSON.stringify(summ, null, 2));
       console.log(`Guardian Response for chunk ${ch.id}:`, JSON.stringify(mod, null, 2));
-      console.log(`PII Findings for chunk ${ch.id}:`, JSON.stringify(piiFindings, null, 2));
+      console.log(`PII Findings for chunk ${ch.id}:`, JSON.stringify(piiFindingsChunk, null, 2));
 
       send('chunk', { id: ch.id, page: ch.page, start: ch.start, end: ch.end });
       send('moderation', { id: ch.id, flags: mod.flags, scores: mod.scores, unsafe: mod.unsafe, sensitive: mod.sensitive, rationale: mod.rationale || undefined });
+      moderationByChunk.push({ id: ch.id, page: ch.page, ...mod });
 
       // Send PII findings for this chunk if any detected
-      if (piiFindings.length > 0) {
-        const piiTypes = [...new Set(piiFindings.map(f => f.type))];
+      if (piiFindingsChunk.length > 0) {
+        piiByChunk.push(...piiFindingsChunk);
+        const piiTypes = [...new Set(piiFindingsChunk.map(f => f.type))];
         const chunkPiiData = {
           id: ch.id,
           page: ch.page,
-          count: piiFindings.length,
+          count: piiFindingsChunk.length,
           types: piiTypes,
-          findings: piiFindings.map(f => ({
+          findings: piiFindingsChunk.map(f => ({
             type: f.type || 'Unknown',
             field: f.field || 'Unknown Field',
             severity: f.severity || 'medium',
@@ -335,17 +350,19 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     // 4) Aggregate detections & final policy classification
     send('status', { phase: 'final_analysis_start' });
 
-    console.log(`\n=== FINAL PII ANALYSIS ===`);
-    console.log(`extraction.blocks available: ${!!extraction.blocks}`);
-    console.log(`extraction.blocks length: ${extraction.blocks?.length || 0}`);
-    if (extraction.blocks && extraction.blocks.length > 0) {
-      console.log(`First block sample:`, JSON.stringify(extraction.blocks[0], null, 2));
-    }
+    const guardianDoc = aggregateModeration(moderationByChunk);
+    send('guardian', guardianDoc);
 
-    // Use robust PII detector with pattern matching on blocks (includes page numbers)
-    const piiFindings = extraction.blocks && extraction.blocks.length > 0
-      ? detectPIIFromBlocks(extraction.blocks)
-      : detectPIIRobust(extraction.text || '');
+    console.log(`\n=== FINAL PII ANALYSIS ===`);
+    console.log(`PII findings collected from chunks: ${piiByChunk.length}`);
+
+    // Prefer per-chunk findings because they preserve the page mapping used throughout the pipeline.
+    // Docling CLI blocks may not include page numbers, which can make everything appear like "Page 1-2" only.
+    const piiFindings = dedupePiiFindings(piiByChunk.length ? piiByChunk : (
+      extraction.blocks && extraction.blocks.some(b => Number(b?.page || 0) > 0)
+        ? detectPIIFromBlocks(extraction.blocks)
+        : detectPIIRobust(extraction.text || '')
+    ));
 
     console.log(`\n=== FINAL PII FINDINGS (${piiFindings.length} total) ===`);
     console.log(JSON.stringify(piiFindings, null, 2));
@@ -366,9 +383,9 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     };
 
     const guards = runGuards({ text: extraction.text || '', meta: extraction.meta });
-    const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta });
+    const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta, multimodal: extraction.multimodal });
     const equipment = detectEquipment(extraction.text || '', extraction.meta);
-    const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment });
+    const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment, multimodal: extraction.multimodal });
 
     // Evidence and final
     const prompts = buildPrompts({
@@ -385,7 +402,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     const route = shouldRoute({ local, guards, meta: extraction.meta });
     let verifier = null;
     if (route.routed) {
-      verifier = await verifyWithLlama(updatedPrompts, process.env.LLAMA_URL || 'http://localhost:8080');
+      verifier = await verifyWithLlama({ ...updatedPrompts, temperature }, process.env.LLAMA_URL || 'http://localhost:8080');
     }
 
     const final = {
@@ -398,7 +415,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       filePath,
       originalName: req.file?.originalname,
       extraBoxes: extraction?.multimodal?.redaction_boxes || [],
-      searchTexts: buildSearchTexts({ pii, safety }),
+      searchTexts: buildSearchTexts({ pii, safety, guardian: guardianDoc, meta: extraction.meta }),
     });
 
     send('final', {
@@ -408,6 +425,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       redacted_pdf,
       pii,
       safety,
+      guardian: guardianDoc,
       equipment,
       policy,
       local,
@@ -453,9 +471,9 @@ async function fetchLikeProcess(filePath, originalName) {
   const pii = detectPII(extraction.text || '', extraction.meta);
   const redacted = pii?.items?.length ? redactPII(extraction.text || '') : (extraction.text || '');
   const guards = runGuards({ text: redacted, meta: extraction.meta });
-  const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta });
+  const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta, multimodal: extraction.multimodal });
   const equipment = detectEquipment(extraction.text || '', extraction.meta);
-  const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment });
+  const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment, multimodal: extraction.multimodal });
   const prompts = buildPrompts({
     classes: ['Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other'],
     evidence: extraction.evidence,
@@ -471,7 +489,7 @@ async function fetchLikeProcess(filePath, originalName) {
   const route = forceSecond ? { routed: true, reason: 'forced_second_pass' } : shouldRoute({ local, guards, meta: extraction.meta });
   let verifier = null;
   if (route.routed) {
-    verifier = await verifyWithLlama(updatedPrompts, process.env.LLAMA_URL || 'http://localhost:8080');
+    verifier = await verifyWithLlama({ ...updatedPrompts }, process.env.LLAMA_URL || 'http://localhost:8080');
   }
   return {
     document_path: originalName || 'uploaded',
@@ -506,6 +524,159 @@ app.post('/api/feedback', async (req, res) => {
   }
 });
 
+// User-managed redaction rules (remembered across runs).
+// These are best-effort "search text" rules used when generating the redacted PDF.
+app.get('/api/redaction-rules', (req, res) => {
+  const rules = loadRedactionRules();
+  res.json({ count: rules.length, rules });
+});
+
+app.post('/api/redaction-rules', (req, res) => {
+  try {
+    const created = addRedactionRule({ text: req.body?.text, label: req.body?.label });
+    res.json({ ok: true, rule: created });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete('/api/redaction-rules/:id', (req, res) => {
+  try {
+    const removed = removeRedactionRule({ id: req.params?.id });
+    res.json({ ok: true, rule: removed });
+  } catch (e) {
+    const msg = String(e?.message || e);
+    const code = msg === 'not_found' ? 404 : 400;
+    res.status(code).json({ ok: false, error: msg });
+  }
+});
+
+// Manual PDF session for client-side "highlight to redact" workflows.
+// Stores the uploaded PDF temporarily so the UI can render pages and submit redaction boxes
+// without re-uploading the file on every page change.
+app.post('/api/pdf/session', upload.single('file'), async (req, res) => {
+  const tmpPath = req.file?.path;
+  const originalName = req.file?.originalname;
+  if (!tmpPath) return res.status(400).json({ ok: false, error: 'missing_file' });
+  if (!isProbablyPdf({ filePath: tmpPath, originalName })) {
+    try { fs.unlinkSync(tmpPath); } catch { }
+    return res.status(400).json({ ok: false, error: 'pdf_required' });
+  }
+
+  const id = `p_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+  const sessionPath = path.join(sessionsDir, `${id}.pdf`);
+  try {
+    fs.renameSync(tmpPath, sessionPath);
+  } catch (e) {
+    try { fs.unlinkSync(tmpPath); } catch { }
+    return res.status(500).json({ ok: false, error: 'session_store_failed', detail: String(e?.message || e) });
+  }
+
+  try {
+    const signals = await getPdfSignals({ filePath: sessionPath });
+    res.json({
+      ok: true,
+      id,
+      file: path.basename(sessionPath),
+      original_name: originalName || 'document.pdf',
+      pages: Number(signals?.pages || 0) || 0,
+      page_signals: Array.isArray(signals?.page_signals) ? signals.page_signals : [],
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'signals_failed', detail: String(e?.message || e) });
+  }
+});
+
+app.delete('/api/pdf/session/:id', (req, res) => {
+  const id = String(req.params?.id || '').trim();
+  if (!/^p_[A-Za-z0-9_]+$/.test(id)) return res.status(400).json({ ok: false, error: 'invalid_id' });
+  const fullPath = path.join(sessionsDir, `${id}.pdf`);
+  if (!fullPath.startsWith(sessionsDir)) return res.status(400).json({ ok: false, error: 'invalid_path' });
+  if (!fs.existsSync(fullPath)) return res.status(404).json({ ok: false, error: 'not_found' });
+  try { fs.unlinkSync(fullPath); } catch { }
+  res.json({ ok: true });
+});
+
+app.post('/api/pdf/render-pages', async (req, res) => {
+  try {
+    const id = String(req.body?.id || '').trim();
+    const pages = Array.isArray(req.body?.pages) ? req.body.pages : [];
+    const dpi = Number(req.body?.dpi || 180) || 180;
+    if (!/^p_[A-Za-z0-9_]+$/.test(id)) return res.status(400).json({ ok: false, error: 'invalid_id' });
+    const filePath = path.join(sessionsDir, `${id}.pdf`);
+    if (!filePath.startsWith(sessionsDir)) return res.status(400).json({ ok: false, error: 'invalid_path' });
+    if (!fs.existsSync(filePath)) return res.status(404).json({ ok: false, error: 'not_found' });
+
+    const pageList = pages.map(p => Number(p)).filter(p => Number.isFinite(p) && p >= 1 && p <= 200);
+    const out = await renderPdfPages({ filePath, pages: pageList, dpi });
+    if (!out) return res.status(500).json({ ok: false, error: 'render_failed' });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'render_failed', detail: String(e?.message || e) });
+  }
+});
+
+app.post('/api/pdf/redact', async (req, res) => {
+  try {
+    const id = String(req.body?.id || '').trim();
+    const boxes = Array.isArray(req.body?.boxes) ? req.body.boxes : [];
+    const detectPii = req.body?.detect_pii === false ? false : true;
+    const includeRules = req.body?.include_rules === false ? false : true;
+
+    if (!/^p_[A-Za-z0-9_]+$/.test(id)) return res.status(400).json({ ok: false, error: 'invalid_id' });
+    const filePath = path.join(sessionsDir, `${id}.pdf`);
+    if (!filePath.startsWith(sessionsDir)) return res.status(400).json({ ok: false, error: 'invalid_path' });
+    if (!fs.existsSync(filePath)) return res.status(404).json({ ok: false, error: 'not_found' });
+
+    const cleanBoxes = boxes
+      .map((b) => {
+        const page = Number(b?.page || 0) || 0;
+        const bbox = Array.isArray(b?.bbox) && b.bbox.length === 4 ? b.bbox.map(Number) : null;
+        const label = String(b?.label || 'manual').trim() || 'manual';
+        if (!page || !bbox || bbox.some(v => !Number.isFinite(v))) return null;
+        return { page, bbox, label };
+      })
+      .filter(Boolean)
+      .slice(0, 200);
+
+    let searchTexts = [];
+    if (includeRules) {
+      const signals = await getPdfSignals({ filePath });
+      const pagesTotal = Math.max(1, Number(signals?.pages || 1));
+      const rules = loadRedactionRules();
+      for (const r of rules.slice(0, 20)) {
+        for (let p = 1; p <= pagesTotal; p++) {
+          searchTexts.push({ page: p, text: r.text, label: `user_${r.label || 'rule'}` });
+          if (searchTexts.length >= 120) break;
+        }
+        if (searchTexts.length >= 120) break;
+      }
+    }
+
+    const pdfBytes = await redactPdf({ filePath, boxes: cleanBoxes, searchTexts, detectPii });
+    if (!pdfBytes || !Buffer.isBuffer(pdfBytes) || pdfBytes.length < 20) {
+      return res.status(500).json({ ok: false, error: 'redact_failed' });
+    }
+
+    const outName = `manual_redacted_${Date.now()}_${id}.pdf`;
+    const outPath = path.join(redactedDir, outName);
+    fs.writeFileSync(outPath, pdfBytes);
+
+    res.json({
+      ok: true,
+      redacted_pdf: {
+        file: outName,
+        url: `/api/redacted/${outName}`,
+        boxes: cleanBoxes.length,
+        search_texts: searchTexts.length,
+        pii: detectPii,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'redact_failed', detail: String(e?.message || e) });
+  }
+});
+
 function requirePIIRedaction(req) {
   const s = String(process.env.REDACT_PII || 'true').toLowerCase();
   const override = typeof req?.body?.redact_pii !== 'undefined' ? String(req.body.redact_pii).toLowerCase() : null;
@@ -525,15 +696,32 @@ function extractLabel(obj) {
   return null;
 }
 
-function buildSearchTexts({ pii, safety }) {
+function buildSearchTexts({ pii, safety, guardian, meta }) {
   const out = [];
 
-  for (const m of (safety?.matches || [])) {
-    const page = Number(m?.page || 0);
-    const text = String(m?.snippet || '').trim();
-    const label = m?.category ? `safety_${m.category}` : 'safety_match';
-    if (!page || !text) continue;
-    out.push({ page, text, label });
+  // Use Granite Guardian as the high-level gate for what to redact beyond PII:
+  // - Guardian does not provide exact spans, so we use our regex-based safety matches
+  //   to locate the text, but only apply them if Guardian indicates unsafe categories.
+  const guardianFlags = new Set(Array.isArray(guardian?.flags) ? guardian.flags.map(String) : []);
+  const allowUnsafeTextRedaction =
+    guardianFlags.has('child_safety') ||
+    guardianFlags.has('hate') ||
+    guardianFlags.has('exploitative') ||
+    guardianFlags.has('violence') ||
+    guardianFlags.has('criminal') ||
+    guardianFlags.has('political_news') ||
+    guardianFlags.has('cyber_threat');
+
+  if (allowUnsafeTextRedaction) {
+    for (const m of (safety?.matches || [])) {
+      // Vision-derived unsafe matches are redacted via bbox boxes (not text search).
+      if (m?.source === 'vision') continue;
+      const page = Number(m?.page || 0);
+      const text = String(m?.snippet || '').trim();
+      const label = m?.category ? `safety_${m.category}` : 'safety_match';
+      if (!page || !text) continue;
+      out.push({ page, text, label });
+    }
   }
 
   for (const it of (pii?.items || [])) {
@@ -544,8 +732,49 @@ function buildSearchTexts({ pii, safety }) {
     out.push({ page, text, label });
   }
 
+  // Persisted user rules: apply as exact search text matches across all pages.
+  const rules = loadRedactionRules();
+  const pages = Math.max(1, Number(meta?.pages || 1));
+  for (const r of rules.slice(0, 20)) {
+    for (let p = 1; p <= pages; p++) {
+      out.push({ page: p, text: r.text, label: `user_${r.label || 'rule'}` });
+      if (out.length >= 120) break;
+    }
+    if (out.length >= 120) break;
+  }
+
   // Avoid pathological payload sizes
   return out.slice(0, 120);
+}
+
+function aggregateModeration(items) {
+  const arr = Array.isArray(items) ? items : [];
+  const flags = new Set();
+  let unsafe = false;
+  let sensitive = false;
+  for (const it of arr) {
+    for (const f of (it?.flags || [])) flags.add(String(f));
+    unsafe = unsafe || Boolean(it?.unsafe);
+    sensitive = sensitive || Boolean(it?.sensitive);
+  }
+  return { flags: Array.from(flags).sort(), unsafe, sensitive, chunks: arr.length };
+}
+
+function dedupePiiFindings(findings) {
+  const arr = Array.isArray(findings) ? findings : [];
+  const seen = new Set();
+  const out = [];
+  for (const f of arr) {
+    const type = String(f?.type || '').trim();
+    const value = String(f?.value || '').trim();
+    const page = Number(f?.page || 0) || 0;
+    if (!type || !value) continue;
+    const key = `${type.toLowerCase()}|${value.toLowerCase()}|${page || 0}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
 }
 
 async function maybeGenerateRedactedPdf({ filePath, originalName, extraBoxes, searchTexts }) {
@@ -600,9 +829,45 @@ function sanitizeFilename(name) {
   return base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
 }
 
-// Serve static assets for both legacy web/ and new root-based UI
-try { app.use(express.static(path.join(__dirname, '../../public'))); } catch { }
-try { app.use(express.static(path.join(__dirname, '../../web'))); } catch { }
+function resolveStaticDir(name, candidates) {
+  for (const dir of candidates) {
+    try {
+      const indexFile = path.join(dir, 'index.html');
+      if (fs.existsSync(indexFile)) {
+        console.log(`[static] Serving ${name} from: ${dir}`);
+        return dir;
+      }
+    } catch { }
+  }
+  console.warn(`[static] ${name} not found. Tried: ${candidates.join(' | ')}`);
+  return null;
+}
+
+// Serve static assets.
+// NOTE: The server can run in two layouts:
+// - Local dev: repo/server/src/index.js  -> public is ../../public
+// - Docker image: /app/src/index.js      -> public is ../public
+const publicDir = resolveStaticDir('public', [
+  path.join(__dirname, '../../public'),
+  path.join(__dirname, '../public'),
+  path.join(process.cwd(), 'public'),
+  path.join(process.cwd(), '../public'),
+]);
+
+if (publicDir) {
+  app.use(express.static(publicDir));
+}
+
+// Optional legacy web/ UI (kept for compatibility)
+const webDir = resolveStaticDir('web', [
+  path.join(__dirname, '../../web'),
+  path.join(__dirname, '../web'),
+  path.join(process.cwd(), 'web'),
+  path.join(process.cwd(), '../web'),
+]);
+if (webDir) {
+  app.use(express.static(webDir));
+}
 
 app.listen(PORT, () => {
   console.log(`Doc classifier service listening on http://localhost:${PORT}`);

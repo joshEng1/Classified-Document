@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import logging
 import re
+import time
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, Response
@@ -232,7 +233,80 @@ def _detect_pii_boxes_fitz_page(page) -> List[dict]:
             continue
         i += 1
 
+    # 4) Name-like: anchored on common field labels ("Name", "Applicant", etc.) on the same line.
+    # This is intentionally conservative to avoid redacting arbitrary capitalized text in marketing docs.
+    NAME_LABELS = {"name", "applicant", "employee", "customer"}
+    NAME_SKIP = {"last", "first", "middle", "mi", "m.i"}
+
+    def looks_like_name_token(tok: str) -> bool:
+        if not tok:
+            return False
+        t = tok.strip()
+        if any(ch.isdigit() for ch in t):
+            return False
+        if "@" in t:
+            return False
+        # Allow "Simmons," and "J."
+        core = t.rstrip(".,")
+        if not core:
+            return False
+        if len(core) == 1 and t.endswith(".") and core.isalpha() and core.isupper():
+            return True
+        return core[:1].isupper() and core[1:].islower() and core.isalpha()
+
+    # Group by (block,line) for stable name extraction
+    line_map = {}
+    for w in words_sorted:
+        key = (w[5], w[6])
+        line_map.setdefault(key, []).append(w)
+
+    for (_b, _l), line_words in line_map.items():
+        toks = [_clean_word(w[4] or "") for w in line_words]
+        toks_l = [t.lower() for t in toks]
+        for idx, tl in enumerate(toks_l):
+            if tl not in NAME_LABELS:
+                continue
+            # Find the first candidate token after the label
+            j = idx + 1
+            while j < len(toks):
+                tlj = toks_l[j].strip("():,")
+                if not tlj:
+                    j += 1
+                    continue
+                if tlj in NAME_SKIP:
+                    j += 1
+                    continue
+                # Skip punctuation-like tokens that sometimes get captured as words
+                if tlj in {"(", ")", "-", "—"}:
+                    j += 1
+                    continue
+                break
+            if j >= len(toks):
+                continue
+
+            picked = []
+            # Capture up to 4 tokens (Last, First, Middle/Initial)
+            for k in range(j, min(len(toks), j + 5)):
+                tk = toks[k]
+                if not tk:
+                    continue
+                # Stop if we run into another label-ish section
+                if toks_l[k] in NAME_LABELS:
+                    break
+                if looks_like_name_token(tk) or (tk.endswith(",") and looks_like_name_token(tk.rstrip(","))):
+                    picked.append(line_words[k])
+                    continue
+                # If we already picked at least 2 name tokens, stop on non-name token
+                if len(picked) >= 2:
+                    break
+            if len(picked) >= 2:
+                b = _union_bbox([p[0:4] for p in picked])
+                if b:
+                    value = " ".join(_clean_word(p[4] or "") for p in picked)
+                    add_box(page_no, b, "name", value)
+
     return boxes
+
 
 def _compute_pdf_page_signals(pdf_bytes: bytes) -> dict:
     import fitz  # PyMuPDF
@@ -485,10 +559,10 @@ def _extract_with_docling_python(data: bytes, filename: str) -> dict:
         from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         
-        # Configure for standard pipeline (no VLM, no OCR to avoid OpenGL)
+        # Configure for standard pipeline (no VLM). OCR/table extraction can be toggled via env.
         pipeline_options = PdfPipelineOptions()
-        pipeline_options.do_ocr = False  # Disable OCR (requires OpenGL)
-        pipeline_options.do_table_structure = False  # Disable table structure (may require OpenGL)
+        pipeline_options.do_ocr = os.getenv("DOCLING_OCR", "1") in ("1", "true", "True", "yes")
+        pipeline_options.do_table_structure = os.getenv("DOCLING_TABLES", "1") in ("1", "true", "True", "yes")
         
         # Create converter with standard pipeline
         converter = DocumentConverter(
@@ -599,8 +673,8 @@ def _to_paragraphs(lines: List[str]) -> List[str]:
 def _extract_with_docling_cli(bytes_data: bytes, filename: Optional[str] = None):
     """
     Invoke Docling CLI to convert the source to Markdown/JSON.
-    Uses authoritative flags: --to, --pipeline, --ocr/--no-ocr, --pdf-backend, --tables/--no-tables
-    
+    Uses authoritative flags: --to, --pipeline, --ocr/--no-ocr, --pdf-backend, --tables/--no-tables, --output
+
     Note: Using 'standard' pipeline instead of 'vlm' to avoid model loading issues.
     VLM pipeline requires additional model files that may not be available.
     """
@@ -609,9 +683,17 @@ def _extract_with_docling_cli(bytes_data: bytes, filename: Optional[str] = None)
     # Use standard pipeline by default (faster, more reliable)
     pipeline = os.getenv("DOCLING_PIPELINE", "standard")
     vlm_model = os.getenv("DOCLING_VLM_MODEL", "granite_docling")
+    # OCR is the biggest performance lever for Docling.
+    # Modes:
+    # - DOCLING_OCR_MODE=on|off|auto (default auto)
+    # - DOCLING_OCR=1|0 (legacy; used when DOCLING_OCR_MODE not set)
+    ocr_mode = (os.getenv("DOCLING_OCR_MODE", "auto") or "auto").strip().lower()
     use_ocr = os.getenv("DOCLING_OCR", "1") in ("1", "true", "True", "yes")
     pdf_backend = os.getenv("DOCLING_PDF_BACKEND")
     use_tables = os.getenv("DOCLING_TABLES", "1") in ("1", "true", "True", "yes")
+    # Avoid massive markdown outputs by default (Docling may embed base64 images).
+    # We do NOT rely on embedded images for Vision (we render via /render-pages and /render-regions).
+    image_export_mode = (os.getenv("DOCLING_IMAGE_EXPORT_MODE", "placeholder") or "placeholder").strip().lower()
 
     suffix = ".pdf"
     try:
@@ -627,27 +709,112 @@ def _extract_with_docling_cli(bytes_data: bytes, filename: Optional[str] = None)
         tmp_path = tmp.name
 
     try:
-        args = [cli, "--to", to_fmt, tmp_path]
-        if pipeline:
-            args += ["--pipeline", pipeline]
-        if pipeline == "vlm" and vlm_model:
-            args += ["--vlm-model", vlm_model]
-        if use_ocr:
-            args += ["--ocr"]
-        else:
-            args += ["--no-ocr"]
-        if pdf_backend:
-            args += ["--pdf-backend", pdf_backend]
-        if use_tables:
-            args += ["--tables"]
-        else:
-            args += ["--no-tables"]
+        # Docling CLI writes outputs to files, not stdout. Always use a temp output directory and read back the artifact.
+        with tempfile.TemporaryDirectory(prefix="docling_out_") as out_dir:
+            args = [cli, "--to", to_fmt, "--output", out_dir, tmp_path]
+            if pipeline:
+                args += ["--pipeline", pipeline]
+            if pipeline == "vlm" and vlm_model:
+                # Optional: only applies to VLM pipeline
+                args += ["--vlm-model", vlm_model]
+            # Auto OCR heuristic: if the PDF already has selectable text, skip OCR (much faster).
+            # For scanned PDFs, enable OCR.
+            use_ocr_final = use_ocr
+            if ocr_mode in ("on", "true", "1", "yes"):
+                use_ocr_final = True
+            elif ocr_mode in ("off", "false", "0", "no"):
+                use_ocr_final = False
+            elif ocr_mode == "auto":
+                try:
+                    if _pdf_has_selectable_text(bytes_data):
+                        use_ocr_final = False
+                except Exception:
+                    # If auto-detection fails, fall back to DOCLING_OCR
+                    use_ocr_final = use_ocr
 
-        proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "docling CLI failed")
+            if use_ocr_final:
+                args += ["--ocr"]
+            else:
+                args += ["--no-ocr"]
+            if pdf_backend:
+                args += ["--pdf-backend", pdf_backend]
+            if use_tables:
+                args += ["--tables"]
+            else:
+                args += ["--no-tables"]
+            if image_export_mode in ("placeholder", "embedded", "referenced"):
+                args += ["--image-export-mode", image_export_mode]
 
-        output = proc.stdout or ""
+            t0 = time.time()
+            proc = subprocess.run(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=300,
+            )
+            elapsed_ms = int((time.time() - t0) * 1000)
+            if proc.returncode != 0:
+                stderr = (proc.stderr or "").strip()
+                raise RuntimeError(stderr[:1000] or "docling CLI failed")
+
+            logger.info(
+                f"docling_cli_ok to={to_fmt} pipeline={pipeline} ocr={use_ocr_final} tables={use_tables} image_export={image_export_mode} ms={elapsed_ms}"
+            )
+
+            # Prefer exact expected output path, otherwise fall back to first matching file in output dir.
+            stem = "document"
+            try:
+                if filename:
+                    stem = os.path.splitext(os.path.basename(filename))[0] or stem
+                else:
+                    stem = os.path.splitext(os.path.basename(tmp_path))[0] or stem
+            except Exception:
+                pass
+
+            ext_map = {
+                "md": ".md",
+                "markdown": ".md",
+                "json": ".json",
+                "yaml": ".yaml",
+                "yml": ".yml",
+                "text": ".txt",
+                "txt": ".txt",
+                "doctags": ".doctags",
+                "html": ".html",
+                "html_split_page": ".html",
+            }
+            out_ext = ext_map.get((to_fmt or "md").strip().lower(), f".{(to_fmt or 'md').strip().lower()}")
+            expected = os.path.join(out_dir, f"{stem}{out_ext}")
+            candidates: List[str] = []
+            try:
+                if os.path.isfile(expected):
+                    candidates = [expected]
+                else:
+                    candidates = sorted(
+                        [
+                            os.path.join(out_dir, f)
+                            for f in os.listdir(out_dir)
+                            if f.lower().endswith(out_ext.lower())
+                        ]
+                    )
+            except Exception:
+                candidates = []
+
+            if not candidates:
+                # Include a small amount of context to help debugging.
+                dir_listing = ""
+                try:
+                    dir_listing = ", ".join(sorted(os.listdir(out_dir))[:30])
+                except Exception:
+                    dir_listing = ""
+                raise RuntimeError(
+                    f"docling_cli_no_output_file (to={to_fmt}, ext={out_ext}, out_dir_listing={dir_listing})"
+                )
+
+            with open(candidates[0], "r", encoding="utf-8", errors="replace") as f:
+                output = f.read()
+
         # Determine pages best-effort
         pages = 0
         try:
@@ -665,6 +832,28 @@ def _extract_with_docling_cli(bytes_data: bytes, filename: Optional[str] = None)
             os.unlink(tmp_path)
         except Exception:
             pass
+
+
+def _pdf_has_selectable_text(data: bytes) -> bool:
+    """
+    Best-effort heuristic: return True if the PDF appears to contain real embedded text.
+    This avoids enabling OCR on digital PDFs (OCR is expensive and usually unnecessary).
+    """
+    if not data or data[:4] != b"%PDF":
+        return False
+    import fitz  # PyMuPDF
+    doc = fitz.open(stream=data, filetype="pdf")
+    try:
+        n = min(3, doc.page_count)
+        total = 0
+        for i in range(n):
+            page = doc.load_page(i)
+            total += len((page.get_text("text") or "").strip())
+            if total >= 200:
+                return True
+        return total >= 200
+    finally:
+        doc.close()
 
 def _guess_is_image(ext: str) -> bool:
     return ext.lower() in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp"]
@@ -757,11 +946,50 @@ def _extract_with_vlm_cli(bytes_data: bytes, filename: Optional[str] = None):
 @app.post("/extract")
 async def extract(file: UploadFile = File(...)):
     """
-    Extract text from an uploaded document using Docling Python API.
+    Extract text from an uploaded document.
+
+    Pipeline selection via env:
+      - EXTRACT_PIPELINE=docling_cli (default): prefer Docling CLI conversion (supports --ocr)
+      - EXTRACT_PIPELINE=python: Docling Python API
+      - EXTRACT_PIPELINE=vlm_cli: llama.cpp multimodal CLI fallback
+
     Returns JSON with pages, text, and structured blocks.
     """
     data = await file.read()
-    res = _extract_with_docling_python(data, file.filename)
+
+    pipeline = (os.getenv("EXTRACT_PIPELINE", "docling_cli") or "docling_cli").strip().lower()
+
+    res = None
+
+    # Prefer CLI when available (enables OCR via DOCLING_OCR=1)
+    if pipeline in ("docling_cli", "cli") and CLI_AVAILABLE:
+        try:
+            res = _extract_with_docling_cli(data, file.filename)
+        except Exception as e:
+            logger.warning(f"Docling CLI extraction failed, falling back: {e}")
+            res = None
+
+    if res is None and pipeline in ("vlm_cli", "vlm") and os.getenv("VLM_CLI") and os.getenv("VLM_MODEL"):
+        try:
+            res = _extract_with_vlm_cli(data, file.filename)
+        except Exception as e:
+            logger.warning(f"VLM CLI extraction failed, falling back: {e}")
+            res = None
+
+    if res is None:
+        # Python API (may disable OCR by default; see DOCLING_OCR env)
+        try:
+            res = _extract_with_docling_python(data, file.filename)
+        except Exception as e:
+            logger.warning(f"Docling Python API extraction failed, falling back: {e}")
+            res = None
+
+    if res is None:
+        try:
+            res = _extract_with_pdfminer(data)
+        except Exception:
+            res = None
+
     if res and (res.get("text") or res.get("blocks")):
         return JSONResponse(res)
     raise HTTPException(500, "Docling extraction failed")
@@ -886,82 +1114,7 @@ async def redact(
 
 @app.get("/health")
 def health():
-    pipeline = os.getenv("DOCLING_PIPELINE", "docling_cli")
+    extract_pipeline = os.getenv("EXTRACT_PIPELINE", "docling_cli")
+    docling_pipeline = os.getenv("DOCLING_PIPELINE", "standard")
     docling_flag = DOCILING_AVAILABLE or CLI_AVAILABLE
-    return {"ok": True, "docling": docling_flag, "cli": CLI_AVAILABLE, "pipeline": pipeline}
-
-
-def _extract_with_docling_cli(bytes_data: bytes, filename: Optional[str] = None):
-    """
-    Invoke Docling CLI to convert the source to Markdown/JSON, with VLM pipeline.
-    Controlled by environment variables:
-      DOCLING_CLI=docling (path to binary)
-      DOCLING_TO=md|json|html|text (default md)
-      DOCLING_PIPELINE=standard|vlm|asr (default vlm)
-      DOCLING_VLM_MODEL=granite_docling|smoldocling|... (default granite_docling)
-      DOCLING_OCR=1|0 (default 1)
-      DOCLING_PDF_BACKEND=pypdfium2|dlparse_v1|dlparse_v2|dlparse_v4 (optional)
-      DOCLING_TABLES=1|0 (default 1)
-    """
-    cli = os.getenv("DOCLING_CLI", "docling")
-    to_fmt = os.getenv("DOCLING_TO", "md")
-    pipeline = os.getenv("DOCLING_PIPELINE", "vlm")
-    vlm_model = os.getenv("DOCLING_VLM_MODEL", "granite_docling")
-    use_ocr = os.getenv("DOCLING_OCR", "1") in ("1", "true", "True", "yes")
-    pdf_backend = os.getenv("DOCLING_PDF_BACKEND")
-    use_tables = os.getenv("DOCLING_TABLES", "1") in ("1", "true", "True", "yes")
-
-    suffix = ".pdf"
-    try:
-        if filename:
-            _, ext = os.path.splitext(filename)
-            if ext and ext.lower() in [".pdf", ".docx", ".doc"]:
-                suffix = ext
-    except Exception:
-        pass
-
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(bytes_data)
-        tmp_path = tmp.name
-
-    try:
-        args = [cli, "--to", to_fmt, tmp_path]
-        if pipeline:
-            args += ["--pipeline", pipeline]
-        if pipeline == "vlm" and vlm_model:
-            args += ["--vlm-model", vlm_model]
-        if use_ocr:
-            args += ["--ocr"]
-        else:
-            args += ["--no-ocr"]
-        if pdf_backend:
-            args += ["--pdf-backend", pdf_backend]
-        if use_tables:
-            args += ["--tables"]
-        else:
-            args += ["--no-tables"]
-
-        proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
-        if proc.returncode != 0:
-            raise RuntimeError(f"docling CLI failed: {proc.stderr.strip()[:300]}")
-
-        output = proc.stdout or ""
-
-        # Determine pages using PyMuPDF if possible
-        pages = 0
-        try:
-            import fitz
-            doc = fitz.open(tmp_path)
-            pages = doc.page_count
-            doc.close()
-        except Exception:
-            pages = 0
-
-        text = output
-        blocks = _to_paragraphs([ln.strip() for ln in output.splitlines()])
-        return { "pages": pages, "text": text, "blocks": [{"text": b} for b in blocks][:200] }
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+    return {"ok": True, "docling": docling_flag, "cli": CLI_AVAILABLE, "extract_pipeline": extract_pipeline, "docling_pipeline": docling_pipeline}

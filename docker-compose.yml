@@ -5,11 +5,14 @@ services:
     ports:
       - "7000:7000"
     environment:
-      - DOCLING_PIPELINE=docling_cli
+      - EXTRACT_PIPELINE=docling_cli
       - DOCLING_CLI=docling
       - DOCLING_TO=md
+      - DOCLING_PIPELINE=standard
+      - DOCLING_OCR_MODE=auto
       - DOCLING_OCR=1
-      - DOCLING_TABLES=1
+      - DOCLING_TABLES=0
+      - DOCLING_IMAGE_EXPORT_MODE=placeholder
       # Optional backend for PDFs (uncomment to override)
       # - DOCLING_PDF_BACKEND=pypdfium2
     restart: unless-stopped
@@ -37,6 +40,7 @@ services:
       - VISION_CROP_FIGURES=${VISION_CROP_FIGURES:-true}
       - VISION_MAX_REGIONS_PER_PAGE=${VISION_MAX_REGIONS_PER_PAGE:-3}
       - VISION_MIN_REGION_AREA_PCT=${VISION_MIN_REGION_AREA_PCT:-0.03}
+      - VISION_MIN_TOTAL_REGION_AREA_PCT=${VISION_MIN_TOTAL_REGION_AREA_PCT:-0.15}
       - VISION_RENDER_DPI=${VISION_RENDER_DPI:-220}
       - VISION_MAX_PAGES=${VISION_MAX_PAGES:-12}
       # Docling is another container on the default compose network

@@ -7,8 +7,10 @@ html.docz .docz-previews {
 
 html.docz .docz-preview {
     animation: docz-fade-in 0.5s;
-    background-color: var(--docz-color-disabled);
+    background-color: var(--docz-color-surface);
+    border: 1px solid var(--docz-color-border);
     border-radius: var(--docz-border-radius);
+    box-shadow: var(--docz-shadow-sm);
     padding: 1em;
     position: relative;
     transition: background-color 1s;
@@ -17,7 +19,7 @@ html.docz .docz-preview {
 
 html.docz .docz-preview > embed {
     animation: docz-fade-in 0.5s 0.75s forwards;
-    border-radius: calc(var(--docz-border-radius) * 0.5);
+    border-radius: calc(var(--docz-border-radius) * 0.75);
     height: min(33vw, 33vh);
     opacity: 0;
 }
@@ -26,7 +28,7 @@ html.docz .docz-preview > button {
     background-color: var(--docz-color-destroy);
     right: 0;
     margin: initial !important;
-    border: 0.33em solid var(--docz-color-disabled);
+    border: 0.25em solid rgba(0, 0, 0, 0.25);
     padding: calc(var(--docz-padding-element) * 0.5) !important;
     position: absolute;
     top: 0;

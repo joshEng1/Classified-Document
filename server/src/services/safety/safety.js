@@ -47,12 +47,36 @@ function splitPages(text, meta) {
   return Array.from({ length: pages }, (_v, i) => text.slice(i * per, (i + 1) * per));
 }
 
-export function assessSafety({ text, meta }) {
+export function assessSafety({ text, meta, multimodal }) {
   const pagesArr = splitPages(text || '', meta);
   const matches = [];
   for (const [label, regs] of Object.entries(LISTS)) {
     matches.push(...findMatches(text || '', pagesArr, label, regs));
   }
+
+  // Merge multimodal (Vision) safety flags when available.
+  // This is essential for image-heavy documents where unsafe content is not present in extracted text.
+  const visionRegions = Array.isArray(multimodal?.vision?.regions) ? multimodal.vision.regions : [];
+  for (const r of visionRegions) {
+    const page = Number(r?.page || 0) || 1;
+    const bbox = Array.isArray(r?.bbox) && r.bbox.length === 4 ? r.bbox : undefined;
+    const a = r?.analysis || {};
+    const flags = a?.flags && typeof a.flags === 'object' ? a.flags : {};
+
+    const snippet = String(a?.summary || a?.rationale || a?.extracted_text || '').slice(0, 160);
+    const push = (category) => {
+      matches.push({ category, snippet: snippet || 'vision_flag', page, bbox, source: 'vision', region_id: r?.id });
+    };
+
+    if (flags.unsafe_child) push('child_safety');
+    if (flags.hate) push('hate');
+    if (flags.exploitative) push('exploitative');
+    if (flags.violence) push('violent');
+    if (flags.criminal) push('criminal');
+    if (flags.political_news) push('political_news');
+    if (flags.cyber_threat) push('cyber_threat');
+  }
+
   const categories = Array.from(new Set(matches.map(m => m.category)));
   const unsafe = categories.length > 0;
   return {

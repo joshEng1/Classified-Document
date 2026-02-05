@@ -7,7 +7,8 @@ package-lock.json
 yarn.lock
 /HitachiDS_Datathon_Challenges_Package
 */models
-
+/Classification-Document-Analyzer-Datathon/assets
+Classification-Document-Analyzer-Datathon/.run
 **.ps1
 # Environment variables
 .env

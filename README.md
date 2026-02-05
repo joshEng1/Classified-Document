@@ -67,7 +67,7 @@ End-to-end document classification system with:
 ## 🏗️ Architecture
 
 ```
-Web UI (port: file://) 
+Web UI (port: 5055) 
     ↓
 Classification Server (port: 5055)
     ↓
@@ -89,11 +89,24 @@ Local classifier
 - If missing, a heuristic classifier based on guard signals is used.
 
 Front end
-- Static React (CDN) in `web/`. No build tooling required.
- - Accepts PDF and common image formats; displays safety, PII, policy, and status updates.
+- Enterprise UI is served by the Node server from `public/` at `http://localhost:5055/`.
+ - Tailwind-like utilities are vendored as `public/tailwind.css` so the UI runs offline (no CDN).
+ - Manual “highlight to redact” tool renders PDF pages and lets reviewers draw redaction boxes, generating a new burned-in redacted PDF.
+ - Optional rebuild: `powershell -ExecutionPolicy Bypass -File .\\scripts\\build-tailwind.ps1` (requires `tailwindcss` available to `npx`).
 
 Notes
 - For robust citations (page/bbox), integrate Docling or PDF engines with positional data in `extractor/doclingAdapter.js` and adjust `citations.js`.
 - For multimodal verification with GGUF, run llama.cpp server locally and set `VERIFIER_ENGINE=llama`.
  - For hybrid figure routing with Granite Vision, set `VISION_URL` + `VISION_MODEL` and ensure Docling service exposes `/signals` + `/render-regions`.
  - Batch API: POST `/api/process-batch` with multipart `files[]` or JSON `{ paths: [...] }` returns per-file results.
+
+Dev (auto-reload with Docker)
+- Use `docker-compose.dev.yml` to bind-mount source and enable reload:
+  ```powershell
+  docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+  ```
+
+Local model servers (Windows)
+- Start llama.cpp servers for Vision/Guardian (and optional SLM) without typing each command:
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\start-model-servers.ps1` (reads ports/models from `server/.env` when available)
+  - Stop: `powershell -ExecutionPolicy Bypass -File .\scripts\stop-model-servers.ps1`

@@ -94,6 +94,38 @@ const docz = {
         }
     }),
     _api_base: (() => { try { const q = new URLSearchParams(location.search).get('api'); return q || localStorage.getItem('apiBase') || 'http://localhost:5055'; } catch { return 'http://localhost:5055'; } })(),
+
+    get_settings: (() => {
+        const noImages = Boolean(document.getElementById('docz-no-images')?.checked);
+        const temperature = Number(document.getElementById('docz-temp')?.value ?? 0);
+        return { noImages, temperature: Number.isFinite(temperature) ? temperature : 0 };
+    }),
+
+    save_redaction_rule: (async () => {
+        const text = String(document.getElementById('docz-redaction-text')?.value || '').trim();
+        const label = String(document.getElementById('docz-redaction-label')?.value || 'custom').trim();
+        if (!text) {
+            docz.chat_queue_add('❌ Missing redaction text.');
+            docz.chat_queue_run();
+            return;
+        }
+        try {
+            const resp = await fetch(docz._api_base + '/api/redaction-rules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, label }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data?.error || 'failed_to_save_rule');
+            docz.chat_queue_add(`✅ Saved redaction rule (${label}): "${text}"`);
+            const input = document.getElementById('docz-redaction-text');
+            if (input) input.value = '';
+            docz.chat_queue_run();
+        } catch (e) {
+            docz.chat_queue_add('❌ Failed to save rule: ' + (e?.message || e));
+            docz.chat_queue_run();
+        }
+    }),
     chat_submit: (async () => {
         if (!docz.previews.children.length) return;
         docz.section_show("2");
@@ -108,6 +140,9 @@ const docz = {
     _stream_process: (async (file) => {
         // Start SSE POST to /api/process-stream
         const fd = new FormData(); fd.append('file', file);
+        const settings = docz.get_settings();
+        fd.append('no_images', settings.noImages ? 'true' : 'false');
+        fd.append('temperature', String(settings.temperature));
         const resp = await fetch(docz._api_base + '/api/process-stream', { method: 'POST', body: fd });
         const reader = resp.body.getReader(); const dec = new TextDecoder('utf-8');
         let buf = '';

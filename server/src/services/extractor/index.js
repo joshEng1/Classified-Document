@@ -15,7 +15,7 @@ function basicLegibility({ text, numPages }) {
   };
 }
 
-export async function extractDocument({ filePath, originalName, providedText, preferDocling = true }) {
+export async function extractDocument({ filePath, originalName, providedText, preferDocling = true, disableVision = false }) {
   let meta = { pages: 0, images: 0, source: 'unknown', originalName };
   let text = '';
   let ocrText = '';
@@ -24,6 +24,7 @@ export async function extractDocument({ filePath, originalName, providedText, pr
   let multimodal = { vision: null, redaction_boxes: [], page_signals: [] };
   let used = 'none';
   const status = [];
+  const noVision = Boolean(disableVision);
   function mark(phase, extra) {
     try { status.push({ phase, at: new Date().toISOString(), ...(extra || {}) }); } catch { }
   }
@@ -53,7 +54,7 @@ export async function extractDocument({ filePath, originalName, providedText, pr
   }
 
   // 1b) Hybrid multimodal routing: only for PDFs, only for figure-heavy pages
-  if (filePath && isProbablyPdf({ filePath, originalName })) {
+  if (!noVision && filePath && isProbablyPdf({ filePath, originalName })) {
     try {
       const vision = await augmentWithVision({ filePath, blocks, meta });
       multimodal = {

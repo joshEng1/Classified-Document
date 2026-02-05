@@ -8,11 +8,8 @@ RUN npm install --production
 COPY server/src ./src
 COPY server/.env.example ./.env.example
 COPY server/README.md ./README.md
-# Copy web static to serve
-# Copy static assets (new UI at repo root)
-COPY index.html ./public/index.html
-COPY css ./public/css
-COPY js ./public/js
+# Copy static UI
+COPY public ./public
 COPY web ./web
 
 ENV PORT=5055

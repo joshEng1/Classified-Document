@@ -3,8 +3,14 @@
 
 import axios from 'axios';
 
-export async function summarizeChunk({ text, baseUrl }) {
+export async function summarizeChunk({ text, baseUrl, temperature }) {
   const url = baseUrl || process.env.SLM_URL || process.env.LLAMA_URL || 'http://localhost:8080';
+  const temp =
+    Number.isFinite(Number(temperature))
+      ? Number(temperature)
+      : Number.isFinite(Number(process.env.LLM_TEMPERATURE))
+        ? Number(process.env.LLM_TEMPERATURE)
+        : 0;
   const system = [
     'You are a concise analyst. Summarize text in <= 2 sentences.',
     'Return strict JSON: { summary: string, key_phrases: string[] }',
@@ -13,7 +19,7 @@ export async function summarizeChunk({ text, baseUrl }) {
   try {
     const payload = {
       model: 'granite-4.0-350m',
-      temperature: 0,
+      temperature: temp,
       max_tokens: 400,  // Increased from 180 for more detailed summaries and key phrases
       messages: [
         { role: 'system', content: system },

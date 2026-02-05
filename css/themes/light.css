@@ -1,9 +1,15 @@
 html.docz[data-theme="light"] {
-    --docz-color-background: #fff !important;
-    --docz-color-foreground: #111 !important;
-    --docz-color-primary: #69c !important;
+    --docz-color-background: #f7f9fe !important;
+    --docz-color-surface: rgba(255, 255, 255, 0.9) !important;
+    --docz-color-surface-2: rgba(255, 255, 255, 0.95) !important;
+    --docz-color-border: rgba(15, 23, 42, 0.14) !important;
+    --docz-color-foreground: #0b1220 !important;
+    --docz-color-muted: rgba(11, 18, 32, 0.68) !important;
+    --docz-color-primary: #2d6cdf !important;
+    --docz-color-primary-2: #1f4fb0 !important;
+    --docz-color-disabled: rgba(15, 23, 42, 0.12) !important;
 }
 
 html.docz[data-theme="light"] > body main > img:last-child {
-    filter: invert() hue-rotate(180deg);
+    filter: saturate(0.85) contrast(1.05) brightness(1.05);
 }

@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en" data-mode="business">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="AI-powered document analysis with PII detection, classification, and redaction - all running locally and offline-first." />
+    <meta name="theme-color" content="#09090b" />
+    <title>Document Analyzer | AI-Powered Document Intelligence</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/tailwind.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/app.js" defer></script>
+    <style>
+      body { font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    </style>
+  </head>
+  <body class="min-h-screen text-white antialiased">
+    <div class="bg-app min-h-screen">
+      <header class="border-b border-white/[0.06] backdrop-blur-xl sticky top-0 z-50 bg-black/30">
+        <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
+          <div class="flex items-center gap-3.5">
+            <div class="brand-mark">
+              <img src="/assets/icon.svg" alt="" class="h-8 w-8" />
+            </div>
+            <div class="leading-tight">
+              <div class="text-[11px] font-medium tracking-wide text-neutral-500 uppercase">AI-powered • Offline-first</div>
+              <div class="text-[15px] font-semibold tracking-tight text-white">Document Analyzer</div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <div id="status-pill" class="status-pill" title="Backend status">
+              <span>Checking…</span>
+            </div>
+            <button id="btn-toggle-mode" class="btn-tertiary text-sm" type="button" aria-pressed="false" title="Toggle developer mode">
+              Developer mode
+            </button>
+            <button id="btn-open-rules" class="btn-secondary text-sm" type="button">
+              <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+              Redaction rules
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main class="mx-auto max-w-6xl px-6 py-10">
+        <!-- Hero -->
+        <section class="py-12 lg:py-16">
+          <div class="grid items-center gap-12 lg:grid-cols-2">
+            <div>
+              <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-medium mb-6">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/></svg>
+                <span>Local AI Processing</span>
+              </div>
+              <h1 class="text-4xl font-bold tracking-tight leading-[1.15] lg:text-5xl bg-gradient-to-br from-white via-white to-neutral-400 bg-clip-text text-transparent">
+                Classify, cite, and redact documents—locally.
+              </h1>
+              <p class="mt-5 max-w-xl text-base leading-relaxed text-neutral-400">
+                Upload a multi-page PDF or DOCX. The pipeline extracts content, flags PII/unsafe risk, routes Vision only when needed,
+                and produces an audit-ready report with page-level citations and an optional redacted PDF.
+              </p>
+
+              <div class="mt-8 flex flex-wrap items-center gap-4">
+                <button id="btn-cta-start" class="btn-primary text-sm" type="button">
+                  <svg class="w-4 h-4 -ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  Analyze a document
+                </button>
+                <a class="btn-secondary text-sm dev-only" href="/health" target="_blank" rel="noreferrer">
+                  <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                  API health
+                </a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Analyzer -->
+        <section id="analyzer" class="py-8">
+          <div class="grid gap-6 lg:grid-cols-2">
+            <!-- Upload & settings -->
+            <div class="card p-6">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h2 class="text-lg font-semibold tracking-tight">Upload & settings</h2>
+                  <p class="mt-0.5 text-xs text-neutral-500">Configure your document analysis</p>
+                </div>
+                <span class="text-xs text-neutral-500 dev-only" id="api-base-label"></span>
+              </div>
+
+              <div class="mt-5">
+                <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Upload a document">
+                  <div class="flex flex-col items-center gap-3">
+                    <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/10 border border-indigo-500/20 flex items-center justify-center">
+                      <svg class="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                    </div>
+                    <div>
+                      <div class="dropzone-title">Drop a PDF/DOCX here</div>
+                      <div class="dropzone-sub">or click to browse • Max 50MB</div>
+                    </div>
+                  </div>
+                  <input id="file-input" class="hidden" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                </div>
+
+                <div id="file-row" class="mt-4 hidden">
+                  <div class="file-row">
+                    <div class="file-meta flex items-center gap-3">
+                      <div class="w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-500/20 flex items-center justify-center flex-shrink-0">
+                        <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                      </div>
+                      <div>
+                        <div class="text-sm font-medium truncate" id="file-name">—</div>
+                        <div class="text-xs text-neutral-500" id="file-size">—</div>
+                      </div>
+                    </div>
+                    <button id="btn-clear-file" type="button" class="btn-tertiary text-sm">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+
+                <div id="pdf-preview-wrap" class="mt-4 hidden">
+                  <div class="file-row">
+                    <div class="file-meta">
+                      <div class="text-sm font-medium">PDF preview</div>
+                      <div class="text-xs text-neutral-500">Confirm you selected the correct document</div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button id="btn-toggle-preview" type="button" class="btn-tertiary text-sm">Show</button>
+                      <button id="btn-open-manual-redact" type="button" class="btn-tertiary text-sm">Redact</button>
+                    </div>
+                  </div>
+                  <div id="pdf-preview" class="mt-3 hidden">
+                    <iframe id="pdf-frame" class="pdf-frame" title="PDF preview"></iframe>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-6 grid gap-4">
+                <label class="field-row">
+                  <input id="no-images" type="checkbox" />
+                  <span>No images within file (skip Vision)</span>
+                </label>
+
+                <div class="field">
+                  <div class="flex items-center justify-between gap-4">
+                    <label for="temperature" class="text-sm text-neutral-300">Temperature</label>
+                    <div class="text-xs font-medium text-indigo-400 tabular-nums"><span id="temperature-value">0.00</span></div>
+                  </div>
+                  <input id="temperature" type="range" min="0" max="1" step="0.05" value="0" />
+                </div>
+
+                <button id="btn-analyze" class="btn-primary w-full" type="button">
+                  Analyze Document
+                </button>
+
+                <div class="text-xs text-neutral-500 dev-only">
+                  Uses <span class="kbd">POST /api/process-stream</span> and renders evidence with citations and redaction options.
+                </div>
+              </div>
+            </div>
+
+            <!-- Live status -->
+            <div class="card p-6">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h2 class="text-lg font-semibold tracking-tight">Live status</h2>
+                  <p class="mt-0.5 text-xs text-neutral-500">Real-time processing pipeline</p>
+                </div>
+                <button id="btn-clear-log" class="btn-tertiary text-sm dev-only" type="button">Clear</button>
+              </div>
+
+              <div class="mt-5 stepper" aria-label="Processing steps">
+                <div id="step-extract" class="step">
+                  <div class="step-dot"></div>
+                  <div class="step-text">
+                    <div class="step-title">Extract</div>
+                    <div class="step-sub" id="step-extract-sub">Waiting…</div>
+                  </div>
+                </div>
+                <div id="step-chunk" class="step">
+                  <div class="step-dot"></div>
+                  <div class="step-text">
+                    <div class="step-title">Chunk</div>
+                    <div class="step-sub" id="step-chunk-sub">Waiting…</div>
+                  </div>
+                </div>
+                <div id="step-moderate" class="step">
+                  <div class="step-dot"></div>
+                  <div class="step-text">
+                    <div class="step-title">Moderation / PII</div>
+                    <div class="step-sub" id="step-moderate-sub">Waiting…</div>
+                  </div>
+                </div>
+                <div id="step-final" class="step">
+                  <div class="step-dot"></div>
+                  <div class="step-text">
+                    <div class="step-title">Final</div>
+                    <div class="step-sub" id="step-final-sub">Waiting…</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-6">
+                <div class="progress">
+                  <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+                </div>
+                <div class="mt-2.5 flex items-center justify-between gap-4 text-xs text-neutral-400">
+                  <div class="font-medium">Chunks: <span id="progress-text" class="text-neutral-300">0 / 0</span></div>
+                  <div id="progress-right" class="font-medium tabular-nums">—</div>
+                </div>
+              </div>
+
+              <div class="mt-6 grid gap-3 sm:grid-cols-3">
+                <div class="mini-stat">
+                  <div class="mini-label">Sensitivity Flags</div>
+                  <div class="mini-value" id="mini-flags">0</div>
+                </div>
+                <div class="mini-stat">
+                  <div class="mini-label">PII Detected</div>
+                  <div class="mini-value" id="mini-pii">0</div>
+                </div>
+                <div class="mini-stat">
+                  <div class="mini-label">Pages</div>
+                  <div class="mini-value" id="mini-pages">—</div>
+                </div>
+              </div>
+
+              <div id="activity-section" class="mt-6 dev-only">
+                <div class="text-sm font-medium text-neutral-300">Activity Log</div>
+                <div id="activity-log" class="log mt-3" aria-live="polite"></div>
+              </div>
+
+              <div id="health-section" class="mt-6 dev-only">
+                <div class="text-sm font-medium text-neutral-300">API Health</div>
+                <pre id="health-json" class="mt-3 code-block"></pre>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- Report -->
+        <section id="report" class="py-8 hidden">
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-medium mb-2">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                Analysis Complete
+              </div>
+              <h2 class="text-2xl font-bold tracking-tight">Classification Report</h2>
+              <div class="mt-1 text-sm text-neutral-400" id="report-subtitle">—</div>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <a id="btn-download-redacted" class="btn-primary text-sm hidden" href="#" download>
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                Download redacted PDF
+              </a>
+              <button id="btn-open-rules-2" class="btn-secondary text-sm" type="button">
+                <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                Manage rules
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-8 grid gap-4 md:grid-cols-4">
+            <div class="kpi-card">
+              <div class="kpi-label">Overall Classification</div>
+              <div class="kpi-value" id="kpi-overall">—</div>
+              <div class="kpi-sub" id="kpi-overall-sub">—</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">Pages / Images</div>
+              <div class="kpi-value"><span id="kpi-pages">—</span> / <span id="kpi-images">—</span></div>
+              <div class="kpi-sub">Extracted document metadata</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">PII Instances</div>
+              <div class="kpi-value" id="kpi-pii-total">—</div>
+              <div class="kpi-sub" id="kpi-pii-types">—</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">Guardian Status</div>
+              <div class="kpi-value" id="kpi-guardian">—</div>
+              <div class="kpi-sub" id="kpi-guardian-sub">—</div>
+            </div>
+          </div>
+
+          <div class="mt-6 grid gap-6 lg:grid-cols-2">
+            <div class="card p-6">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h3 class="text-base font-semibold tracking-tight">Evidence & Citations</h3>
+                  <p class="mt-0.5 text-xs text-neutral-500">Page-level source references</p>
+                </div>
+              </div>
+              <div id="evidence-list" class="grid gap-3"></div>
+            </div>
+
+            <div class="card p-6">
+              <div>
+                <h3 class="text-base font-semibold tracking-tight">Safety & Moderation</h3>
+                <p class="mt-0.5 text-xs text-neutral-500">Content risk assessment</p>
+              </div>
+              <div class="grid gap-5">
+                <div>
+                  <div class="text-sm font-medium text-neutral-300 flex items-center gap-2">
+                    <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                    Safety Concerns
+                  </div>
+                  <div class="mt-2.5" id="safety-concerns"></div>
+                </div>
+                <div>
+                  <div class="text-sm font-medium text-neutral-300 flex items-center gap-2">
+                    <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                    Guardian Flags
+                  </div>
+                  <div class="mt-2.5" id="guardian-flags"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-6 card p-6 dev-only">
+            <details>
+              <summary class="cursor-pointer text-sm font-medium text-neutral-300 hover:text-white transition-colors">
+                <span class="ml-1">Audit JSON (raw payload)</span>
+              </summary>
+              <pre id="audit-json" class="mt-4 code-block"></pre>
+            </details>
+          </div>
+        </section>
+      </main>
+
+      <!-- Rules drawer -->
+      <div id="rules-drawer" class="drawer hidden" aria-hidden="true">
+        <div id="rules-overlay" class="drawer-overlay"></div>
+        <div class="drawer-panel" role="dialog" aria-modal="true" aria-label="Redaction rules">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-semibold tracking-tight">Redaction Rules</h2>
+              <p class="mt-1 text-sm text-neutral-400">Manage text patterns for automatic redaction</p>
+            </div>
+            <button id="btn-close-rules" class="icon-btn" type="button" aria-label="Close">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+
+          <div class="mt-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+            <div class="flex gap-3">
+              <svg class="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <div class="text-sm text-amber-200/90">
+                Add exact text matches to redact in future runs. Rules are applied across all pages when generating the redacted PDF.
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-6 grid gap-4">
+            <div>
+              <label class="text-xs font-medium text-neutral-400 uppercase tracking-wide">Text to redact</label>
+              <input id="rule-text" class="input mt-2" type="text" placeholder="e.g., John Doe, 555-1234" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="text-xs font-medium text-neutral-400 uppercase tracking-wide">Category</label>
+                <select id="rule-label" class="select mt-2">
+                  <option value="name">Name</option>
+                  <option value="address">Address</option>
+                  <option value="phone">Phone</option>
+                  <option value="ssn">SSN</option>
+                  <option value="email">Email</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="flex items-end">
+                <button id="btn-save-rule" class="btn-primary w-full" type="button">Add Rule</button>
+              </div>
+            </div>
+            <div class="text-xs text-neutral-500" id="rules-hint">—</div>
+          </div>
+
+          <div class="mt-8">
+            <div class="text-xs font-medium text-neutral-400 uppercase tracking-wide">Saved Rules</div>
+            <div id="rules-list" class="mt-3 grid gap-2"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Toasts -->
+      <div id="toasts" class="toasts" aria-live="polite" aria-relevant="additions"></div>
+
+      <!-- Manual redaction modal -->
+      <div id="redact-modal" class="modal hidden" aria-hidden="true">
+        <div id="redact-overlay" class="modal-overlay"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Manual redaction tool">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-red-300 text-xs font-medium mb-2">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                Manual Mode
+              </div>
+              <div class="text-lg font-semibold tracking-tight">Highlight Areas to Redact</div>
+            </div>
+            <button id="btn-close-redact" class="icon-btn" type="button" aria-label="Close">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+
+          <div class="mt-5 grid gap-5 lg:grid-cols-2">
+            <div class="card p-6">
+              <div class="text-sm font-medium text-neutral-300">Controls</div>
+              <div class="mt-4 grid gap-4">
+                <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                  <button id="btn-prev-page" class="btn-tertiary text-sm" type="button">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                    Prev
+                  </button>
+                  <div class="text-sm font-medium text-neutral-300">
+                    Page <span id="redact-page" class="text-indigo-400">1</span> / <span id="redact-pages">—</span>
+                  </div>
+                  <button id="btn-next-page" class="btn-tertiary text-sm" type="button">
+                    Next
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                  </button>
+                </div>
+                <div class="text-xs text-neutral-500">
+                  Click and drag to draw redaction boxes. They will be applied when generating the final PDF.
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button id="btn-clear-boxes" class="btn-tertiary text-sm" type="button">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                    Clear All
+                  </button>
+                  <button id="btn-generate-manual" class="btn-primary text-sm flex-1" type="button">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    Generate Redacted PDF
+                  </button>
+                </div>
+                <a id="btn-download-manual" class="btn-secondary text-sm hidden text-center" href="#" download>
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                  Download Manual Redaction
+                </a>
+              </div>
+
+              <div class="mt-6">
+                <div class="text-sm font-medium text-neutral-300">Active Boxes</div>
+                <div id="redact-box-list" class="mt-3 grid gap-2 max-h-48 overflow-auto"></div>
+              </div>
+            </div>
+
+            <div class="card p-6">
+              <div class="text-sm font-medium text-neutral-300">Page Preview</div>
+              <div class="mt-3 redact-canvas">
+                <img id="redact-img" alt="Rendered PDF page" />
+                <div id="redact-box-layer" class="redact-layer" aria-hidden="true"></div>
+                <div id="redact-draw-layer" class="redact-layer" aria-hidden="true"></div>
+                <div id="redact-hit" class="redact-hit" aria-label="Draw redaction boxes"></div>
+              </div>
+              <div class="mt-2.5 text-xs text-neutral-500" id="redact-hint">Click and drag to create redaction areas</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <footer class="border-t border-white/[0.06] mt-8">
+        <div class="mx-auto max-w-6xl px-6 py-6">
+          <div class="flex flex-wrap items-center justify-between gap-4 text-xs text-neutral-500">
+            <div>Document Analyzer • Built with local AI models</div>
+            <div class="flex items-center gap-4">
+              <span class="dev-only">Developer Mode Active</span>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

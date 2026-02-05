@@ -12,17 +12,22 @@ const DEFAULT_PROMPT = [
   'Tasks:',
   '1) Extract any visible text (best-effort OCR).',
   '2) Briefly summarize what the figure depicts.',
-  '3) Flag risks: PII (SSN/credit card/account numbers), proprietary schematic/blueprint, customer details, internal business content, and child-safety concerns (hate/exploitative/violent/criminal/political news/cyber threat).',
+  '3) Detect if this is defense/military equipment (e.g., stealth fighter) and whether part names or serial identifiers are present.',
+  '4) Flag risks: PII (SSN/credit card/account numbers), proprietary schematic/blueprint, customer details, internal business/non-public ops content, and child-safety concerns (hate/exploitative/violent/criminal/political news/cyber threat).',
   '',
   'Return ONLY valid JSON with this exact shape:',
   '{',
   '  "extracted_text": "",',
   '  "summary": "",',
+  '  "detected_serials": [],',
   '  "flags": {',
   '    "pii": false,',
   '    "proprietary_schematic": false,',
+  '    "defense_equipment": false,',
+  '    "serial_or_part_names": false,',
   '    "customer_details": false,',
   '    "internal_business": false,',
+  '    "non_public_ops": false,',
   '    "unsafe_child": false,',
   '    "hate": false,',
   '    "exploitative": false,',
@@ -75,11 +80,24 @@ export async function analyzeVisionImage({ imageBase64, prompt, baseUrl }) {
     const parsed = safeJson(content);
 
     const flags = typeof parsed?.flags === 'object' && parsed.flags ? parsed.flags : {};
-    const sensitive = Boolean(parsed?.sensitive) || Boolean(flags?.pii || flags?.proprietary_schematic || flags?.customer_details || flags?.internal_business);
+    const detected_serials = Array.isArray(parsed?.detected_serials) ? parsed.detected_serials.map(String).slice(0, 12) : [];
+    const sensitive =
+      Boolean(parsed?.sensitive) ||
+      Boolean(
+        flags?.pii ||
+        flags?.proprietary_schematic ||
+        flags?.customer_details ||
+        flags?.internal_business ||
+        flags?.non_public_ops ||
+        flags?.defense_equipment ||
+        flags?.serial_or_part_names ||
+        detected_serials.length > 0,
+      );
 
     return {
       extracted_text: String(parsed?.extracted_text || '').slice(0, 4000),
       summary: String(parsed?.summary || '').slice(0, 1200),
+      detected_serials,
       flags,
       sensitive,
       rationale: String(parsed?.rationale || '').slice(0, 1200),
@@ -87,7 +105,18 @@ export async function analyzeVisionImage({ imageBase64, prompt, baseUrl }) {
     };
   } catch (e) {
     const status = e?.response?.status;
-    const detail = e?.response?.data || e?.message;
+    const data = e?.response?.data;
+    const message =
+      (typeof data === 'object' && data && data?.error && typeof data.error?.message === 'string' && data.error.message) ||
+      (typeof data === 'string' && data) ||
+      (typeof e?.message === 'string' && e.message) ||
+      'Vision request failed';
+    const detail =
+      typeof data === 'string'
+        ? data
+        : (typeof data === 'object' && data)
+          ? JSON.stringify(data)
+          : String(e?.message || '');
     return {
       extracted_text: '',
       summary: '',
@@ -96,16 +125,33 @@ export async function analyzeVisionImage({ imageBase64, prompt, baseUrl }) {
       rationale: '',
       error: 'vision_request_failed',
       status,
-      detail: String(detail).slice(0, 300),
+      detail: String(message).slice(0, 300),
+      detail_raw: String(detail).slice(0, 600),
     };
   }
 }
 
 function safeJson(s) {
-  try {
-    return JSON.parse(String(s || '').trim());
-  } catch {
-    return { raw: String(s || '') };
-  }
-}
+  const raw = String(s || '').trim();
+  if (!raw) return {};
 
+  // Fast path: pure JSON.
+  try { return JSON.parse(raw); } catch { }
+
+  // Strip Markdown code fences.
+  const unfenced = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try { return JSON.parse(unfenced); } catch { }
+
+  // Attempt to parse the first JSON object in the string.
+  const first = unfenced.indexOf('{');
+  const last = unfenced.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    const maybe = unfenced.slice(first, last + 1).trim();
+    try { return JSON.parse(maybe); } catch { }
+  }
+
+  return { raw };
+}

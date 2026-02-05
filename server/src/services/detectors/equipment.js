@@ -19,8 +19,15 @@ function pageAt(offset, pagesArr) {
   return pagesArr.length;
 }
 
+function stripEmbeddedBase64Images(text) {
+  // Docling Markdown often embeds images as data URIs, which can contain many false-positive cue matches
+  // (e.g., "F22" inside base64). Strip these before running regex detectors.
+  const t = String(text || '');
+  return t.replace(/\(data:image\/[a-zA-Z0-9.+-]+;base64,[^)]+\)/g, '(data:image;base64,...)');
+}
+
 export function detectEquipment(text, meta) {
-  const t = text || '';
+  const t = stripEmbeddedBase64Images(text || '');
   const pagesArr = splitPages(t, meta);
   const items = [];
   const cues = [

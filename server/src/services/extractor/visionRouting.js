@@ -65,6 +65,7 @@ export async function augmentWithVision({ filePath, blocks, meta }) {
   const renderDpi = Math.round(num(process.env.VISION_RENDER_DPI, 220));
   const maxRegionsPerPage = Math.round(num(process.env.VISION_MAX_REGIONS_PER_PAGE, 3));
   const minRegionAreaPct = num(process.env.VISION_MIN_REGION_AREA_PCT, 0.03);
+  const minTotalRegionAreaPct = num(process.env.VISION_MIN_TOTAL_REGION_AREA_PCT, 0.15);
 
   const signals = await getPdfSignals({ filePath });
   const pageSignals = Array.isArray(signals?.page_signals) ? signals.page_signals : [];
@@ -113,6 +114,38 @@ export async function augmentWithVision({ filePath, blocks, meta }) {
     }
   }
 
+  // If crops cover too little of the page (common for PDFs with many tiny image blocks),
+  // also analyze the full page for routed pages.
+  if (regions.length && imagesById.size > 0) {
+    const areaByPage = new Map();
+    for (const r of regions) {
+      const p = Number(r?.page || 0);
+      if (!p) continue;
+      areaByPage.set(p, (areaByPage.get(p) || 0) + num(r?.area_pct || 0, 0));
+    }
+    const pagesNeedingFull = routed
+      .map(r => r.page)
+      .filter(p => (areaByPage.get(Number(p)) || 0) < minTotalRegionAreaPct);
+
+    if (pagesNeedingFull.length) {
+      const rendered = await renderPdfPages({ filePath, pages: pagesNeedingFull, dpi: renderDpi });
+      const imgs = Array.isArray(rendered?.images) ? rendered.images : [];
+      for (const img of imgs) {
+        const id = `p${img.page}_full`;
+        imagesById.set(id, { ...img, id });
+        regions.push({
+          id,
+          page: img.page,
+          bbox: (() => {
+            const sig = sigByPage.get(Number(img.page));
+            return sig?.width && sig?.height ? [0, 0, Number(sig.width), Number(sig.height)] : null;
+          })(),
+          kind: 'page',
+        });
+      }
+    }
+  }
+
   // Fallback: render full pages when no regions were found or region rendering failed
   if (!regions.length || imagesById.size === 0) {
     const pages = routed.map(r => r.page);
@@ -149,8 +182,12 @@ export async function augmentWithVision({ filePath, blocks, meta }) {
     };
     regionResults.push(record);
 
-    if (analysis?.sensitive && record.page && Array.isArray(record.bbox) && record.bbox.length === 4) {
-      redactionBoxes.push({ page: record.page, bbox: record.bbox, label: 'vision_sensitive' });
+    const flags = analysis?.flags && typeof analysis.flags === 'object' ? analysis.flags : {};
+    const unsafeByVision = Boolean(flags?.unsafe_child || flags?.hate || flags?.exploitative || flags?.violence || flags?.criminal || flags?.political_news || flags?.cyber_threat);
+    const redact = Boolean(analysis?.sensitive || unsafeByVision);
+
+    if (redact && record.page && Array.isArray(record.bbox) && record.bbox.length === 4) {
+      redactionBoxes.push({ page: record.page, bbox: record.bbox, label: unsafeByVision ? 'vision_unsafe' : 'vision_sensitive' });
     }
   }
 

@@ -7,6 +7,7 @@
     "start": "node src/index.js",
     "dev": "NODE_ENV=development node src/index.js",
     "one:shot": "node scripts/one-shot.js",
+    "test:cases": "node scripts/run-testcases.js",
     "lint": "echo \"No linter configured\""
   },
   "dependencies": {

@@ -1,27 +1,33 @@
 html.docz > body button {
     align-items: center;
     background-color: var(--docz-color-primary);
-    border: none;
-    border-radius: var(--docz-border-radius);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--docz-border-radius-sm);
     color: var(--docz-color-foreground);
     display: flex;
     font-family: inherit;
     font-size: 1em;
     font-weight: bold;
     justify-content: center;
-    padding: calc(var(--docz-padding-element) * 0.5) var(--docz-padding-element);
-    transition-duration: 0.1s;
-    transition-property: background-color, color;
+    letter-spacing: 0.02em;
+    padding: calc(var(--docz-padding-element) * 0.55) calc(var(--docz-padding-element) * 0.9);
+    box-shadow: var(--docz-shadow-sm);
+    transition-duration: 0.12s;
+    transition-property: background-color, color, transform, box-shadow;
 }
 
 html.docz > body button:disabled {
     background-color: var(--docz-color-disabled);
+    color: rgba(230, 237, 247, 0.65);
+    box-shadow: none;
 }
 
 html.docz > body button:not(:disabled):hover {
     background-color: var(--docz-color-foreground);
     color: var(--docz-color-primary);
     cursor: pointer;
+    transform: translateY(-1px);
+    box-shadow: var(--docz-shadow-md);
 }
 
 html.docz > body button svg {
@@ -35,5 +41,6 @@ html.docz > body button:not(:disabled):hover svg {
 }
 
 html.docz > body button.docz-button-round {
-    padding: calc(var(--docz-padding-element) * 0.75);
+    border-radius: 999px;
+    padding: calc(var(--docz-padding-element) * 0.65);
 }

@@ -1,0 +1,13 @@
+services:
+  # Dev overrides: bind-mount source and enable reload so containers reflect code changes immediately.
+  docling:
+    volumes:
+      - ./docling-service:/app
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7000", "--reload"]
+
+  server:
+    volumes:
+      - ./server/src:/app/src
+      - ./public:/app/public
+      - ./web:/app/web
+    command: ["node", "--watch", "src/index.js"]

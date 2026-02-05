@@ -60,9 +60,9 @@ async function main() {
   // 2) Signals
   const pii = detectPII(extraction.text || '', extraction.meta);
   const guards = runGuards({ text: extraction.text || '', meta: extraction.meta });
-  const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta });
+  const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta, multimodal: extraction.multimodal });
   const equipment = detectEquipment(extraction.text || '', extraction.meta);
-  const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment });
+  const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment, multimodal: extraction.multimodal });
 
   // 3) Local classification
   const classes = ['Internal Memo', 'Employee Application', 'Invoice', 'Public Marketing Document', 'Other'];

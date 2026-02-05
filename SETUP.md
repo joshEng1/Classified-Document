@@ -128,7 +128,7 @@ docker compose up -d
 
 ### Test via Web Interface
 
-1. Open your browser to: `http://localhost:5055` or open `web/index.html`
+1. Open your browser to: `http://localhost:5055/`
 2. Upload a PDF document
 3. View the classification results
 
@@ -153,7 +153,7 @@ $result | ConvertTo-Json -Depth 5
 
 2. **Make your code changes** in:
    - `server/src/` - Backend logic
-   - `web/` - Frontend UI
+   - `public/` - Frontend UI
    - `server/src/config/prompts.json` - Classification prompts
 
 3. **Rebuild and restart**:

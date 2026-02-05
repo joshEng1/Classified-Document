@@ -30,11 +30,16 @@ const DEFAULT_CATEGORIES = [
 export async function moderateText({ text, baseUrl, categories = DEFAULT_CATEGORIES }) {
   const url = (baseUrl || process.env.GUARDIAN_URL || process.env.LLAMA_URL || 'http://localhost:8080');
 
-  console.log('\n========== GUARDIAN REQUEST ==========');
-  console.log('Guardian URL:', url);
-  console.log('Text length:', text?.length || 0);
-  console.log('Text preview:', text?.substring(0, 200));
-  console.log('Categories to check:', categories);
+  const debug = String(process.env.GUARDIAN_DEBUG || 'false').toLowerCase() === 'true';
+  const threshold = clamp01(Number(process.env.GUARDIAN_FLAG_THRESHOLD ?? process.env.GUARDIAN_THRESHOLD ?? 0.5));
+  if (debug) {
+    console.log('\n========== GUARDIAN REQUEST ==========');
+    console.log('Guardian URL:', url);
+    console.log('Text length:', text?.length || 0);
+    console.log('Text preview:', String(text || '').substring(0, 200));
+    console.log('Categories to check:', categories);
+    console.log('Flag threshold:', threshold);
+  }
 
   // Ultra-concise system prompt to reduce token usage
   const system = 'You are Granite Guardian. Return ONLY valid JSON. No explanations, no notes, no additional text.';
@@ -81,27 +86,29 @@ export async function moderateText({ text, baseUrl, categories = DEFAULT_CATEGOR
       ],
     };
 
-    console.log('Guardian request payload:', JSON.stringify(payload, null, 2));
+    if (debug) console.log('Guardian request payload:', JSON.stringify(payload, null, 2));
 
     const resp = await axios.post(`${url}/v1/chat/completions`, payload, { timeout: 60000 });
 
-    console.log('Guardian HTTP status:', resp.status);
-    console.log('Guardian response data:', JSON.stringify(resp.data, null, 2));
+    if (debug) {
+      console.log('Guardian HTTP status:', resp.status);
+      console.log('Guardian response data:', JSON.stringify(resp.data, null, 2));
+    }
 
     const content = resp.data?.choices?.[0]?.message?.content || '{}';
 
     // Debug logging to see what Guardian actually returns
-    console.log('[Guardian] Raw response content:', content);
+    if (debug) console.log('[Guardian] Raw response content:', content);
 
     const parsed = safeJson(content);
-    console.log('[Guardian] Parsed JSON:', JSON.stringify(parsed, null, 2));
+    if (debug) console.log('[Guardian] Parsed JSON:', JSON.stringify(parsed, null, 2));
 
     // Normalize
     const scores = Object.fromEntries(categories.map(c => [c, clamp01(Number(parsed?.scores?.[c] ?? 0))]));
-    console.log('[Guardian] Normalized scores:', JSON.stringify(scores, null, 2));
+    if (debug) console.log('[Guardian] Normalized scores:', JSON.stringify(scores, null, 2));
 
-    const flagged = Object.entries(scores).filter(([, v]) => v >= 0.5).map(([k]) => k);
-    console.log('[Guardian] Flagged categories (score >= 0.5):', flagged);
+    const flagged = Object.entries(scores).filter(([, v]) => v >= threshold).map(([k]) => k);
+    if (debug) console.log(`[Guardian] Flagged categories (score >= ${threshold}):`, flagged);
 
     const UNSAFE_SET = new Set(['hate', 'exploitative', 'self_harm', 'sexual', 'violence', 'criminal', 'political_news', 'cyber_threat', 'child_safety', 'toxicity', 'jailbreak']);
     const SENSITIVE_SET = new Set(['pii', 'ssn', 'credit_card', 'financial_account', 'customer_details', 'internal_business', 'non_public_ops', 'proprietary_schematic']);
@@ -112,14 +119,18 @@ export async function moderateText({ text, baseUrl, categories = DEFAULT_CATEGOR
     const unsafe = parsed?.unsafe ?? unsafeByFlags;
     const sensitive = parsed?.sensitive ?? sensitiveByFlags;
 
-    console.log('[Guardian] Final result - Flags:', flagged, 'Unsafe:', unsafe, 'Sensitive:', sensitive, 'Rationale:', parsed?.rationale);
-    console.log('========== GUARDIAN RESPONSE END ==========\n');
+    if (debug) {
+      console.log('[Guardian] Final result - Flags:', flagged, 'Unsafe:', unsafe, 'Sensitive:', sensitive, 'Rationale:', parsed?.rationale);
+      console.log('========== GUARDIAN RESPONSE END ==========\n');
+    }
 
     return { flags: flagged, scores, unsafe, sensitive, rationale: parsed?.rationale || '' };
   } catch (e) {
     console.error('[Guardian] ERROR:', e.message);
-    console.error('[Guardian] Stack:', e.stack);
-    console.log('========== GUARDIAN ERROR END ==========\n');
+    if (debug) {
+      console.error('[Guardian] Stack:', e.stack);
+      console.log('========== GUARDIAN ERROR END ==========\n');
+    }
     return { flags: [], scores: Object.fromEntries(categories.map(c => [c, 0])), unsafe: false, sensitive: false, error: String(e?.message || e) };
   }
 }
