@@ -9,6 +9,7 @@ Document classification pipeline with:
 
 ## Documentation
 
+Open the documentation folder and find the following files:
 - Start here: `START_HERE.md`
 - First-time setup checklist: `CHECKLIST.md`
 - Detailed setup and troubleshooting: `SETUP.md`
