@@ -8,7 +8,7 @@ Node/Express API server that orchestrates extraction, guard signals, PII detecti
 - Guard signals
 - PII detection and optional redaction
 - Local classification (heuristic or llama.cpp)
-- Optional second-pass verification (llama.cpp or OpenAI)
+- Optional second-pass verification (llama.cpp or online provider)
 
 Architecture and design notes live in `AGENTS.md` at the repo root.
 
@@ -44,6 +44,42 @@ Then open `http://localhost:5055/`.
   - field: `file` (PDF)
 - `POST /api/process-batch`
   - multipart `files[]`, or (optional) JSON `{"paths":[...]}` when enabled via `ALLOW_BATCH_PATHS=true`
+
+## Public Portfolio Mode (No local LLM required)
+
+To keep the same document analysis behavior but run model inference via hosted API calls:
+
+1. Copy `.env.example` to `.env`.
+2. Set `ONLINE_PROVIDER=gemini`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `VERIFIER_ENGINE=openai` (or any non-`llama`), and `OFFLINE_MODE=false`.
+   Also set Google OCR routing vars when you want automatic OCR decisions:
+   - `GOOGLE_VISION_API_KEY` (or reuse `GEMINI_API_KEY`)
+   - `DOC_AI_PROJECT_ID`, `DOC_AI_LOCATION`, `DOC_AI_PROCESSOR_ID`
+   - `DOC_AI_ACCESS_TOKEN` (or `GOOGLE_CLOUD_ACCESS_TOKEN`)
+3. Set `LOCAL_CLASSIFIER=heuristic` and keep `VERIFY_SECOND_PASS=true`.
+4. Set `CORS_ORIGINS` to your deployed frontend domain.
+5. Keep `PUBLIC_API_RATE_LIMIT_*` enabled/tuned for abuse control.
+
+Your existing endpoints stay the same, including redacted PDF output and citation evidence in results.
+With `ONLINE_PROVIDER=gemini` and request `model_mode=online`, streaming chunk summarization/moderation/PII-assist run through Gemini, while regex PII and manual redaction workflows remain active.
+OCR routing:
+- `no_images=true` from client skips Document AI OCR.
+- Otherwise Cloud Vision quick-scan checks image presence.
+- Only image-positive docs trigger Document AI OCR.
+In website Developer Mode, `Model Mode` can be switched per request: `online` or `local` (`offline` is treated as `local`).
+
+## Security Notes
+
+- Keep secrets only in `server/.env`; never place provider keys in frontend code.
+- `.env` is ignored by git; commit only `.env.example`.
+- Keep `CORS_ALLOW_ALL=false` and explicitly set `CORS_ORIGINS`.
+- Keep `PUBLIC_API_RATE_LIMIT_ENABLED=true` for public deployments.
+- Keep `API_NO_STORE=true` to avoid caching sensitive API responses.
+- Keep verbose logging off in production:
+  - `VERBOSE_SERVER_LOGS=false`
+  - `LLAMA_DEBUG=false`
+- Auto-clean sensitive artifacts from disk:
+  - `UPLOAD_RETENTION_MINUTES`
+  - `UPLOAD_CLEANUP_INTERVAL_MINUTES`
 
 ## Models
 

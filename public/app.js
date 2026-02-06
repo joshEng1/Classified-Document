@@ -46,6 +46,16 @@ function loadUiMode() {
   return saved === 'dev' ? 'dev' : 'business';
 }
 
+function normalizeModelMode(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'local' || v === 'offline') return 'local';
+  return 'online';
+}
+
+function loadModelMode() {
+  return normalizeModelMode(localStorage.getItem('modelMode') || 'online');
+}
+
 function setText(el, text) {
   if (!el) return;
   el.textContent = String(text ?? '');
@@ -165,6 +175,7 @@ const state = {
   apiBase: resolveApiBase(),
   ui: {
     mode: loadUiMode(), // 'business' | 'dev'
+    modelMode: loadModelMode(), // 'online' | 'local'
     logBuffer: [],
     lastHealth: null,
     lastHealthError: null,
@@ -239,6 +250,16 @@ function applyUiMode() {
   renderManualBoxList();
   renderManualBoxesOnPage();
 
+  const modeSelect = $('#model-mode');
+  if (modeSelect) modeSelect.value = state.ui.modelMode;
+  setText($('#model-mode-value'), state.ui.modelMode === 'local' ? 'local/offline' : 'online');
+  setText(
+    $('#model-mode-hint'),
+    state.ui.modelMode === 'local'
+      ? 'Uses local/offline model path (no hosted verifier calls).'
+      : 'Uses hosted API verification.'
+  );
+
   // Update status pill formatting for the selected mode.
   void checkHealth();
 }
@@ -252,6 +273,12 @@ function setUiMode(mode) {
 function toggleUiMode() {
   setUiMode(isDevMode() ? 'business' : 'dev');
   toast('success', 'Mode changed', isDevMode() ? 'Developer mode enabled' : 'Business mode enabled');
+}
+
+function setModelMode(mode) {
+  state.ui.modelMode = normalizeModelMode(mode);
+  localStorage.setItem('modelMode', state.ui.modelMode);
+  applyUiMode();
 }
 
 function resetRunUi() {
@@ -1153,11 +1180,12 @@ async function startAnalysis() {
 
   const noImages = Boolean($('#no-images')?.checked);
   const temp = Number($('#temperature')?.value ?? 0) || 0;
+  const modelMode = normalizeModelMode(state.ui.modelMode);
   setText($('#hero-kpi-mode'), noImages ? 'Text-only' : 'Hybrid');
 
   resetRunUi();
   logLine(`upload: ${file.name} (${bytesToHuman(file.size)})`);
-  logLine(`settings: no_images=${noImages ? 'true' : 'false'} temperature=${temp.toFixed(2)}`);
+  logLine(`settings: no_images=${noImages ? 'true' : 'false'} temperature=${temp.toFixed(2)} model_mode=${modelMode}`);
 
   const btn = $('#btn-analyze');
   btn && (btn.disabled = true);
@@ -1172,6 +1200,7 @@ async function startAnalysis() {
     form.append('file', file);
     form.append('no_images', String(noImages));
     form.append('temperature', String(temp));
+    form.append('model_mode', modelMode);
 
     setPhase('extract_start');
 
@@ -1237,6 +1266,15 @@ function wireUi() {
   const updateTemp = () => setText(tempVal, (Number(temp?.value ?? 0) || 0).toFixed(2));
   temp?.addEventListener('input', updateTemp);
   updateTemp();
+
+  const modelMode = $('#model-mode');
+  if (modelMode) {
+    modelMode.value = state.ui.modelMode;
+    modelMode.addEventListener('change', () => {
+      setModelMode(modelMode.value);
+      toast('success', 'Model mode updated', state.ui.modelMode === 'local' ? 'Local/Offline mode selected' : 'Online API mode selected');
+    });
+  }
 
   // Dropzone / file selection
   const drop = $('#dropzone');

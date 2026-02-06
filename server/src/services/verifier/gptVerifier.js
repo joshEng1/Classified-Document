@@ -1,7 +1,9 @@
 import axios from 'axios';
+import { safeErrorDetail } from '../../util/security.js';
 
-export async function verifyWithOpenAI(prompts, apiKey) {
-  if (String(process.env.OFFLINE_MODE || 'false').toLowerCase() === 'true') {
+export async function verifyWithOpenAI(prompts, apiKey, options = {}) {
+  const enforceOffline = options?.enforceOffline !== false;
+  if (enforceOffline && String(process.env.OFFLINE_MODE || 'false').toLowerCase() === 'true') {
     return { verdict: 'no', rationale: 'offline_mode', contradictions: ['OFFLINE_MODE=true'] };
   }
   if (!apiKey) {
@@ -14,7 +16,7 @@ export async function verifyWithOpenAI(prompts, apiKey) {
     const ver = await chatJson({ system: prompts.verifier.system, user: prompts.verifier.user, apiKey, responseFormat: 'json_object' });
     return { ...ver, classifier: cls };
   } catch (err) {
-    return { verdict: 'no', rationale: 'openai_error', contradictions: [String(err?.message || err)] };
+    return { verdict: 'no', rationale: 'openai_error', contradictions: [safeErrorDetail(err)] };
   }
 }
 

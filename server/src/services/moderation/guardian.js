@@ -4,6 +4,7 @@
 // Env: GUARDIAN_URL (defaults to LLAMA_URL) for where to send requests.
 
 import axios from 'axios';
+import { safeErrorDetail } from '../../util/security.js';
 
 const DEFAULT_CATEGORIES = [
   'toxicity',
@@ -36,7 +37,6 @@ export async function moderateText({ text, baseUrl, categories = DEFAULT_CATEGOR
     console.log('\n========== GUARDIAN REQUEST ==========');
     console.log('Guardian URL:', url);
     console.log('Text length:', text?.length || 0);
-    console.log('Text preview:', String(text || '').substring(0, 200));
     console.log('Categories to check:', categories);
     console.log('Flag threshold:', threshold);
   }
@@ -86,26 +86,24 @@ export async function moderateText({ text, baseUrl, categories = DEFAULT_CATEGOR
       ],
     };
 
-    if (debug) console.log('Guardian request payload:', JSON.stringify(payload, null, 2));
+    if (debug) console.log('Guardian request payload keys:', Object.keys(payload));
 
     const resp = await axios.post(`${url}/v1/chat/completions`, payload, { timeout: 60000 });
 
     if (debug) {
       console.log('Guardian HTTP status:', resp.status);
-      console.log('Guardian response data:', JSON.stringify(resp.data, null, 2));
+      console.log('Guardian response status: ok');
     }
 
     const content = resp.data?.choices?.[0]?.message?.content || '{}';
 
     // Debug logging to see what Guardian actually returns
-    if (debug) console.log('[Guardian] Raw response content:', content);
-
     const parsed = safeJson(content);
-    if (debug) console.log('[Guardian] Parsed JSON:', JSON.stringify(parsed, null, 2));
+    if (debug) console.log('[Guardian] Parsed JSON keys:', Object.keys(parsed || {}));
 
     // Normalize
     const scores = Object.fromEntries(categories.map(c => [c, clamp01(Number(parsed?.scores?.[c] ?? 0))]));
-    if (debug) console.log('[Guardian] Normalized scores:', JSON.stringify(scores, null, 2));
+    if (debug) console.log('[Guardian] Normalized scores keys:', Object.keys(scores || {}));
 
     const flagged = Object.entries(scores).filter(([, v]) => v >= threshold).map(([k]) => k);
     if (debug) console.log(`[Guardian] Flagged categories (score >= ${threshold}):`, flagged);
@@ -126,12 +124,12 @@ export async function moderateText({ text, baseUrl, categories = DEFAULT_CATEGOR
 
     return { flags: flagged, scores, unsafe, sensitive, rationale: parsed?.rationale || '' };
   } catch (e) {
-    console.error('[Guardian] ERROR:', e.message);
+    console.error('[Guardian] ERROR:', safeErrorDetail(e));
     if (debug) {
       console.error('[Guardian] Stack:', e.stack);
       console.log('========== GUARDIAN ERROR END ==========\n');
     }
-    return { flags: [], scores: Object.fromEntries(categories.map(c => [c, 0])), unsafe: false, sensitive: false, error: String(e?.message || e) };
+    return { flags: [], scores: Object.fromEntries(categories.map(c => [c, 0])), unsafe: false, sensitive: false, error: safeErrorDetail(e) };
   }
 }
 

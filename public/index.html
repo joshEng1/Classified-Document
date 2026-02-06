@@ -153,6 +153,18 @@
                   <input id="temperature" type="range" min="0" max="1" step="0.05" value="0" />
                 </div>
 
+                <div class="field dev-only">
+                  <div class="flex items-center justify-between gap-4">
+                    <label for="model-mode" class="text-sm text-neutral-300">Model Mode</label>
+                    <div class="text-xs font-medium text-indigo-400 tabular-nums"><span id="model-mode-value">online</span></div>
+                  </div>
+                  <select id="model-mode" class="select mt-2">
+                    <option value="online">Online API</option>
+                    <option value="local">Local / Offline</option>
+                  </select>
+                  <div id="model-mode-hint" class="mt-2 text-xs text-neutral-500">Uses hosted API verification.</div>
+                </div>
+
                 <button id="btn-analyze" class="btn-primary w-full" type="button">
                   Analyze Document
                 </button>
