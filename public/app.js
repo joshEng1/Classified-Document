@@ -179,6 +179,7 @@ const state = {
     logBuffer: [],
     lastHealth: null,
     lastHealthError: null,
+    lastProviderStatus: null,
   },
   file: null,
   previewUrl: null,
@@ -240,7 +241,12 @@ function applyUiMode() {
     renderActivityLogFromBuffer();
     const healthPre = $('#health-json');
     if (healthPre) {
-      if (state.ui.lastHealth) setText(healthPre, JSON.stringify(state.ui.lastHealth, null, 2));
+      if (state.ui.lastHealth) {
+        const payload = state.ui.lastProviderStatus
+          ? { ...state.ui.lastHealth, provider_status: state.ui.lastProviderStatus }
+          : state.ui.lastHealth;
+        setText(healthPre, JSON.stringify(payload, null, 2));
+      }
       else if (state.ui.lastHealthError) setText(healthPre, String(state.ui.lastHealthError));
       else setText(healthPre, 'â€”');
     }
@@ -402,7 +408,10 @@ async function checkHealth() {
     const version = String(j?.version || '').trim() || '-';
     setStatusPill('ok', isDevMode() ? `Online (v${version})` : 'Online');
     const pre = $('#health-json');
-    if (pre && isDevMode()) setText(pre, JSON.stringify(j, null, 2));
+    if (pre && isDevMode()) {
+      const payload = state.ui.lastProviderStatus ? { ...j, provider_status: state.ui.lastProviderStatus } : j;
+      setText(pre, JSON.stringify(payload, null, 2));
+    }
     return true;
   } catch (e) {
     setStatusPill('down', 'Offline');
@@ -410,6 +419,34 @@ async function checkHealth() {
     state.ui.lastHealthError = String(e?.message || e);
     const pre = $('#health-json');
     if (pre && isDevMode()) setText(pre, state.ui.lastHealthError);
+    return false;
+  }
+}
+
+async function checkProviderStatus(silent = true) {
+  try {
+    const mode = normalizeModelMode(state.ui.modelMode);
+    const url = joinUrl(state.apiBase, `/api/provider-status?model_mode=${encodeURIComponent(mode)}`);
+    const j = await fetchJson(url, { cache: 'no-store' });
+    state.ui.lastProviderStatus = j || null;
+
+    const pre = $('#health-json');
+    if (pre && isDevMode() && state.ui.lastHealth) {
+      setText(pre, JSON.stringify({ ...state.ui.lastHealth, provider_status: state.ui.lastProviderStatus }, null, 2));
+    }
+
+    if (!silent) {
+      const provider = String(j?.provider || 'online');
+      if (j?.connected) toast('success', 'Provider reachable', `${provider} is connected`);
+      else toast('error', 'Provider not connected', String(j?.detail || 'connection_failed'));
+      logLine(`provider_status: mode=${j?.mode || mode} provider=${provider} connected=${j?.connected ? 'yes' : 'no'} detail=${j?.detail || '-'}`);
+    }
+    return Boolean(j?.connected);
+  } catch (e) {
+    if (!silent) {
+      toast('error', 'Provider check failed', String(e?.message || e));
+      logLine(`provider_status_failed: ${String(e?.message || e)}`);
+    }
     return false;
   }
 }
@@ -1195,6 +1232,12 @@ async function startAnalysis() {
     if (!ok) {
       toast('error', 'Backend offline', `Cannot reach ${state.apiBase}`);
     }
+    if (modelMode === 'online') {
+      const connected = await checkProviderStatus(true);
+      if (!connected) {
+        toast('error', 'Online provider not connected', 'Open Developer Mode and click Check Provider.');
+      }
+    }
 
     const form = new FormData();
     form.append('file', file);
@@ -1254,6 +1297,9 @@ function wireUi() {
 
   // Health
   setInterval(checkHealth, 6000);
+  if (state.ui.modelMode === 'online') {
+    void checkProviderStatus(true);
+  }
 
   // Hero CTA scroll
   $('#btn-cta-start')?.addEventListener('click', () => {
@@ -1273,8 +1319,13 @@ function wireUi() {
     modelMode.addEventListener('change', () => {
       setModelMode(modelMode.value);
       toast('success', 'Model mode updated', state.ui.modelMode === 'local' ? 'Local/Offline mode selected' : 'Online API mode selected');
+      if (state.ui.modelMode === 'online') {
+        void checkProviderStatus(true);
+      }
     });
   }
+
+  $('#btn-check-provider')?.addEventListener('click', () => void checkProviderStatus(false));
 
   // Dropzone / file selection
   const drop = $('#dropzone');

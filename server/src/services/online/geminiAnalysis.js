@@ -145,7 +145,9 @@ export async function detectPIIWithGemini({ text, page, apiKey }) {
 
 async function generateJson({ apiKey, model, system, user, temperature = 0 }) {
   const timeoutMs = Math.max(5000, Number(process.env.GEMINI_TIMEOUT_MS || '45000') || 45000);
-  const url = `${GEMINI_BASE_URL}/${encodeURIComponent(model)}:generateContent`;
+  const accessToken = String(process.env.GOOGLE_CLOUD_ACCESS_TOKEN || process.env.GOOGLE_ACCESS_TOKEN || '').trim();
+  const baseUrl = `${GEMINI_BASE_URL}/${encodeURIComponent(model)}:generateContent`;
+  const url = apiKey ? `${baseUrl}?key=${encodeURIComponent(apiKey)}` : baseUrl;
   const payload = {
     systemInstruction: { parts: [{ text: String(system || '') }] },
     contents: [{ role: 'user', parts: [{ text: JSON.stringify(user ?? {}) }] }],
@@ -154,12 +156,11 @@ async function generateJson({ apiKey, model, system, user, temperature = 0 }) {
       responseMimeType: 'application/json',
     },
   };
+  const headers = { 'Content-Type': 'application/json' };
+  if (!apiKey && accessToken) headers.Authorization = `Bearer ${accessToken}`;
   const resp = await axios.post(url, payload, {
     timeout: timeoutMs,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
+    headers,
   });
   const text = getResponseText(resp?.data);
   return safeJson(text);

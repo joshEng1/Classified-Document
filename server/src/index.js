@@ -1,5 +1,6 @@
 import express from 'express';
 import multer from 'multer';
+import axios from 'axios';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
@@ -169,7 +170,7 @@ function resolveOnlineProvider() {
 
 function resolveOnlineApiKey(provider) {
   if (provider === 'gemini') {
-    return String(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || process.env.API_KEY || '').trim();
+    return String(process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
   }
   return String(process.env.OPENAI_API_KEY || '').trim();
 }
@@ -177,6 +178,11 @@ function resolveOnlineApiKey(provider) {
 function isGeminiOnlineMode(modelMode) {
   const mode = normalizeModelMode(modelMode, getDefaultModelMode());
   return mode === 'online' && resolveOnlineProvider() === 'gemini';
+}
+
+function isOnlineMode(modelMode) {
+  const mode = normalizeModelMode(modelMode, getDefaultModelMode());
+  return mode === 'online';
 }
 
 function indexOfInsensitive(text, needle) {
@@ -338,6 +344,32 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '4mb' }));
 
+// Never trust client-supplied provider secrets. Keys must stay server-side in env vars.
+const CLIENT_SECRET_FIELDS = new Set([
+  'api_key',
+  'apikey',
+  'gemini_api_key',
+  'openai_api_key',
+  'google_vision_api_key',
+  'google_cloud_access_token',
+  'google_access_token',
+  'access_token',
+  'token',
+  'authorization',
+]);
+
+app.use((req, _res, next) => {
+  const body = req?.body;
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    for (const key of Object.keys(body)) {
+      if (CLIENT_SECRET_FIELDS.has(String(key || '').toLowerCase())) {
+        delete body[key];
+      }
+    }
+  }
+  next();
+});
+
 const maxUploadMb = Math.max(1, Number(process.env.MAX_UPLOAD_MB || '25') || 25);
 const upload = multer({
   dest: uploadDir,
@@ -360,6 +392,65 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, version });
 });
 
+app.get('/api/provider-status', async (req, res) => {
+  const mode = normalizeModelMode(req?.query?.model_mode, getDefaultModelMode());
+  const provider = resolveOnlineProvider();
+  const out = {
+    ok: true,
+    mode,
+    online_enabled: mode === 'online',
+    provider,
+    key_configured: false,
+    connected: false,
+    model: null,
+    detail: '',
+  };
+  try {
+    if (mode !== 'online') {
+      out.detail = 'online_mode_not_selected';
+      return res.json(out);
+    }
+
+    if (provider === 'gemini') {
+      const apiKey = resolveOnlineApiKey('gemini');
+      const token = String(process.env.GOOGLE_CLOUD_ACCESS_TOKEN || process.env.GOOGLE_ACCESS_TOKEN || '').trim();
+      out.key_configured = Boolean(apiKey || token);
+      out.model = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+      if (!out.key_configured) {
+        out.detail = 'missing_gemini_credentials';
+        return res.json(out);
+      }
+
+      const url = apiKey
+        ? `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
+        : 'https://generativelanguage.googleapis.com/v1beta/models';
+      const headers = (!apiKey && token) ? { Authorization: `Bearer ${token}` } : undefined;
+      const ping = await axios.get(url, { timeout: 12_000, headers });
+      out.connected = ping.status >= 200 && ping.status < 300;
+      out.detail = out.connected ? 'gemini_reachable' : `gemini_http_${ping.status}`;
+      return res.json(out);
+    }
+
+    const openAiKey = resolveOnlineApiKey('openai');
+    out.key_configured = Boolean(openAiKey);
+    out.model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    if (!openAiKey) {
+      out.detail = 'missing_openai_credentials';
+      return res.json(out);
+    }
+    const ping = await axios.get('https://api.openai.com/v1/models', { timeout: 12_000, headers: { Authorization: `Bearer ${openAiKey}` } });
+    out.connected = ping.status >= 200 && ping.status < 300;
+    out.detail = out.connected ? 'openai_reachable' : `openai_http_${ping.status}`;
+    return res.json(out);
+  } catch (e) {
+    logServerError('provider-status', e);
+    const status = Number(e?.response?.status || 0) || null;
+    out.connected = false;
+    out.detail = status ? `${provider}_http_${status}` : safeErrorDetail(e, 'provider_status_failed');
+    return res.json(out);
+  }
+});
+
 app.get('/api/redacted/:name', (req, res) => {
   const name = String(req.params?.name || '');
   // Basic traversal guard
@@ -378,7 +469,8 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
     const docPath = req.body.document_path || (req.file ? req.file.originalname : undefined);
     const temperature = Number.isFinite(Number(req.body?.temperature)) ? Number(req.body.temperature) : undefined;
     const modelMode = resolveModelMode(req);
-    const noImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
+    const rawNoImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
+    const noImages = isOnlineMode(modelMode) ? false : rawNoImages;
 
     if (!filePath && !req.body.text) {
       return res.status(400).json({ error: 'No file or text provided' });
@@ -389,8 +481,9 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
       filePath,
       originalName: req.file?.originalname,
       providedText: req.body.text,
-      preferDocling: true,
+      preferDocling: !isOnlineMode(modelMode),
       disableVision: noImages,
+      onlineVisionOnly: isOnlineMode(modelMode),
     });
 
     // 2) Guards + PII and Safety + redaction for routed/verifier use
@@ -555,8 +648,9 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     const filePath = req.file ? req.file.path : null;
     const docPath = req.body.document_path || (req.file ? req.file.originalname : undefined);
     const temperature = Number.isFinite(Number(req.body?.temperature)) ? Number(req.body.temperature) : undefined;
-    const noImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
     const modelMode = resolveModelMode(req);
+    const rawNoImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
+    const noImages = isOnlineMode(modelMode) ? false : rawNoImages;
     if (!filePath && !req.body.text) {
       send('error', { error: 'No file or text provided' });
       return res.end();
@@ -568,8 +662,9 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       filePath,
       originalName: req.file?.originalname,
       providedText: req.body.text,
-      preferDocling: true,
+      preferDocling: !isOnlineMode(modelMode),
       disableVision: noImages,
+      onlineVisionOnly: isOnlineMode(modelMode),
     });
     send('extract', { meta: extraction.meta, status: extraction.status });
 
@@ -826,7 +921,8 @@ function resolveBatchPathItems(rawPaths) {
 app.post('/api/process-batch', upload.array('files'), async (req, res) => {
   try {
     const modelMode = resolveModelMode(req);
-    const noImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
+    const rawNoImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
+    const noImages = isOnlineMode(modelMode) ? false : rawNoImages;
     const files = (req.files || []).map(f => ({ path: f.path, originalname: f.originalname, temp: true }));
     const jsonPaths = Array.isArray(req.body?.paths) ? req.body.paths : [];
 
@@ -871,8 +967,9 @@ async function fetchLikeProcess(filePath, originalName, modelMode, noImages = fa
   const extraction = await extractDocument({
     filePath,
     originalName,
-    preferDocling: true,
+    preferDocling: !isOnlineMode(modelMode),
     disableVision: Boolean(noImages),
+    onlineVisionOnly: isOnlineMode(modelMode),
   });
   let pii = detectPII(extraction.text || '', extraction.meta);
   if (isGeminiOnlineMode(modelMode)) {

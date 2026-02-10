@@ -11,10 +11,12 @@
     "lint": "echo \"No linter configured\""
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.64",
     "axios": "^1.7.2",
     "form-data": "^4.0.0",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^4.10.38"
   }
 }

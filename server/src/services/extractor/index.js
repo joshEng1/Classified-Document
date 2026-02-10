@@ -1,11 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import { extractWithDocling } from './doclingAdapter.js';
+import { extractWithPdfParse } from './pdfText.js';
 import { buildEvidence } from './selectors.js';
 import { mapCitations } from '../citations.js';
 import { augmentWithVision } from './visionRouting.js';
-import { quickDetectImagesWithCloudVision } from '../google/cloudVisionClient.js';
-import { extractWithDocumentAI } from '../google/documentAIClient.js';
+import { quickDetectImagesWithCloudVision, extractTextWithCloudVisionPdf } from '../google/cloudVisionClient.js';
 import { safeErrorDetail } from '../../util/security.js';
 
 function basicLegibility({ text, numPages }) {
@@ -18,7 +18,14 @@ function basicLegibility({ text, numPages }) {
   };
 }
 
-export async function extractDocument({ filePath, originalName, providedText, preferDocling = true, disableVision = false }) {
+export async function extractDocument({
+  filePath,
+  originalName,
+  providedText,
+  preferDocling = true,
+  disableVision = false,
+  onlineVisionOnly = false,
+}) {
   let meta = { pages: 0, images: 0, source: 'unknown', originalName };
   let text = '';
   let raw = null;
@@ -29,7 +36,6 @@ export async function extractDocument({ filePath, originalName, providedText, pr
     page_signals: [],
     google: {
       cloud_vision_quick: null,
-      documentai_ocr: { attempted: false, used: false, reason: 'not_needed' },
     },
   };
   let used = 'none';
@@ -51,7 +57,7 @@ export async function extractDocument({ filePath, originalName, providedText, pr
 
   let quickVision = { enabled: false, has_images: false, reason: 'not_applicable', sampled_pages: [], detections: [] };
   const isPdf = filePath && isProbablyPdf({ filePath, originalName });
-  if (isPdf) {
+  if (isPdf && !onlineVisionOnly) {
     if (userSaysNoImages) {
       quickVision = { enabled: false, has_images: false, reason: 'user_no_images', sampled_pages: [], detections: [] };
       mark('cloud_vision_quick_skip', { reason: 'user_no_images' });
@@ -72,66 +78,62 @@ export async function extractDocument({ filePath, originalName, providedText, pr
   }
   multimodal.google.cloud_vision_quick = quickVision;
 
-  // 1) Docling (required) for structured text
-  if (preferDocling && filePath) {
+  // 1) Online-only extraction path: Cloud Vision OCR (no Docling dependency)
+  if (onlineVisionOnly && filePath && isPdf) {
+    const cv = await extractTextWithCloudVisionPdf({
+      filePath,
+      maxPages: Number(process.env.CLOUD_VISION_OCR_MAX_PAGES || 0) || 0,
+    });
+    if (!cv || !cv.text) {
+      throw new Error('cloud_vision_required_failed');
+    }
+    text = cv.text;
+    meta = { ...meta, ...cv.meta, source: 'cloud_vision' };
+    raw = cv.raw;
+    blocks = cv.blocks || [];
+    used = 'cloud_vision';
+    multimodal.google.cloud_vision_quick = {
+      enabled: true,
+      has_images: null,
+      reason: 'online_cloud_vision_only',
+      sampled_pages: [],
+      detections: [],
+    };
+    mark('cloud_vision_ocr_ok', { pages: meta.pages, text_len: text.length });
+  }
+
+  // 2) Local/offline extraction path: Docling first, pdf-parse fallback
+  if (!onlineVisionOnly && preferDocling && filePath) {
     const dl = await extractWithDocling({ filePath });
     if (!dl || !dl.text) {
-      throw new Error('docling_required_failed');
+      const parsed = await extractWithPdfParse({ filePath }).catch(() => null);
+      if (!parsed || !parsed.text) throw new Error('docling_required_failed');
+      text = parsed.text;
+      meta = { ...meta, ...parsed.meta, source: 'pdf_parse' };
+      raw = parsed;
+      blocks = [];
+      used = 'pdf_parse';
+      mark('pdf_parse_fallback_ok', { pages: meta.pages, text_len: text.length });
+    } else {
+      text = dl.text;
+      meta = { ...meta, ...dl.meta, source: 'docling' };
+      raw = dl.raw;
+      blocks = dl.blocks || [];  // Get blocks with page info
+      used = 'docling';
+      mark('docling_ok', { pages: meta.pages });
     }
-    text = dl.text;
-    meta = { ...meta, ...dl.meta, source: 'docling' };
-    raw = dl.raw;
-    blocks = dl.blocks || [];  // Get blocks with page info
-    used = 'docling';
-    mark('docling_ok', { pages: meta.pages });
   }
 
-  const shouldUseDocumentAiOcr = Boolean(
-    isPdf &&
-    !userSaysNoImages &&
-    quickVision?.has_images
-  );
-
-  if (shouldUseDocumentAiOcr && filePath) {
-    multimodal.google.documentai_ocr.attempted = true;
-    try {
-      const docAi = await extractWithDocumentAI({ filePath, mimeType: 'application/pdf' });
-      if (docAi?.text) {
-        const mergedText = chooseOcrText({ baselineText: text, docAiText: docAi.text });
-        text = mergedText;
-        if (Array.isArray(docAi.blocks) && docAi.blocks.length > blocks.length) {
-          blocks = docAi.blocks;
-        }
-        meta = {
-          ...meta,
-          pages: Number(docAi?.meta?.pages || meta.pages || 0) || meta.pages,
-          source: `${meta.source}+documentai_ocr`,
-          ocr_engine: 'documentai',
-        };
-        raw = { docling: raw, documentai: docAi.raw };
-        used = `${used}+documentai_ocr`;
-        multimodal.google.documentai_ocr = { attempted: true, used: true, reason: 'applied' };
-        mark('documentai_ocr_ok', { pages: meta.pages, text_len: text.length });
-      } else {
-        multimodal.google.documentai_ocr = { attempted: true, used: false, reason: 'empty_or_unavailable' };
-        mark('documentai_ocr_skip', { reason: 'empty_or_unavailable' });
-      }
-    } catch (e) {
-      multimodal.google.documentai_ocr = { attempted: true, used: false, reason: 'error' };
-      mark('documentai_ocr_error', { error: safeErrorDetail(e) });
-    }
-  } else {
+  // Vision-only mode: Cloud Vision quick scan is retained for local/offline mode only.
+  if (isPdf && !onlineVisionOnly) {
     const reason = userSaysNoImages
       ? 'user_no_images'
-      : quickVision?.has_images
-        ? 'not_pdf'
-        : 'cloud_vision_no_images';
-    multimodal.google.documentai_ocr = { attempted: false, used: false, reason };
-    mark('documentai_ocr_not_needed', { reason });
+      : (quickVision?.enabled ? (quickVision?.has_images ? 'images_detected' : 'cloud_vision_no_images') : 'cloud_vision_unavailable');
+    mark('cloud_vision_decision', { reason });
   }
 
-  // 1b) Hybrid multimodal routing: only for PDFs, only for figure-heavy pages
-  if (!userSaysNoImages && filePath && isPdf) {
+  // 3) Hybrid multimodal routing (local/offline only)
+  if (!onlineVisionOnly && !userSaysNoImages && filePath && isPdf) {
     try {
       const vision = await augmentWithVision({ filePath, blocks, meta });
       multimodal = {
@@ -159,17 +161,13 @@ export async function extractDocument({ filePath, originalName, providedText, pr
     }
   }
 
-  // 2) No OCR/pdf-parse fallbacks here; Docling CLI handles OCR internally via --ocr.
-
-  // 3) Provided text (debug/testing) only when no file path
+  // 4) Provided text (debug/testing) only when no file path
   if (!filePath && providedText) {
     text = providedText;
     meta = { ...meta, source: 'provided' };
     used = 'provided';
     mark('provided_text');
   }
-
-  // 4) No pdf-parse fallback
 
   // 5) Legibility assessment
   const leg = basicLegibility({ text, numPages: meta.pages || 0 });
@@ -181,17 +179,6 @@ export async function extractDocument({ filePath, originalName, providedText, pr
 
   console.log(`[extractor] Extraction complete - source: ${used}, text length: ${text.length}, images: ${meta.images}, blocks: ${blocks.length}`);
   return { text, meta, evidence, raw, status, blocks, multimodal };
-}
-
-function chooseOcrText({ baselineText, docAiText }) {
-  const base = String(baselineText || '').trim();
-  const dai = String(docAiText || '').trim();
-  if (!dai) return base;
-  if (!base) return dai;
-  if (dai.includes(base)) return dai;
-  if (base.includes(dai)) return base;
-  if (dai.length >= Math.floor(base.length * 0.75)) return dai;
-  return `${base}\n\n${dai}`.trim();
 }
 
 function isProbablyPdf({ filePath, originalName }) {

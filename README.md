@@ -103,10 +103,7 @@ For public use, keep the same endpoints/UI and document workflow, but run verifi
    - `GEMINI_API_KEY=<your key>`
    - `GEMINI_MODEL=gemini-3-flash-preview` (or your preferred Gemini model)
    - `GOOGLE_VISION_API_KEY=<your key>` (or reuse `GEMINI_API_KEY`)
-   - `DOC_AI_PROJECT_ID=<gcp-project>`
-   - `DOC_AI_LOCATION=us`
-   - `DOC_AI_PROCESSOR_ID=<document-ai-ocr-processor-id>`
-   - `DOC_AI_ACCESS_TOKEN=<oauth-access-token>` (or `GOOGLE_CLOUD_ACCESS_TOKEN`)
+   - Optional: `GOOGLE_CLOUD_ACCESS_TOKEN=<oauth-access-token>`
    - `VERIFIER_ENGINE=openai` (or any non-`llama` value to default to online mode)
    - `OFFLINE_MODE=false`
    - `LOCAL_CLASSIFIER=heuristic`
@@ -119,10 +116,11 @@ For public use, keep the same endpoints/UI and document workflow, but run verifi
 This keeps redaction output and citation checking behavior intact while removing the local model dependency for end users.
 When `ONLINE_PROVIDER=gemini` and Developer Mode selects `Online API`, the streaming pipeline uses Gemini for chunk summarization, moderation scoring, and model-assisted PII extraction (merged with regex PII).
 OCR routing rule:
-- If user sets `no_images=true`, Document AI OCR is skipped.
-- Otherwise, Cloud Vision runs a quick image-presence scan.
-- If Cloud Vision reports no images, Document AI OCR is skipped.
-- If Cloud Vision reports images, Document AI OCR is used (when Document AI env/token are configured).
+- `model_mode=online`: extraction runs with Cloud Vision OCR only (no Docling).
+- `model_mode=local` (or `offline`): extraction uses Docling (with pdf-parse fallback) and can run Cloud Vision quick scan for routing/signals.
+- `no_images=true` is only honored in local/offline mode. In online mode it is ignored so Cloud Vision OCR still runs.
+- Online OCR uses **synchronous** Cloud Vision `images:annotate` calls only.
+- Async/batch flows that require Cloud Storage staging are not used.
 
 Developer UI note: in website Developer Mode, `Model Mode` supports `Online API` and `Local / Offline` (offline is treated the same as local).
 
