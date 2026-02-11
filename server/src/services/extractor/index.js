@@ -5,7 +5,8 @@ import { extractWithPdfParse } from './pdfText.js';
 import { buildEvidence } from './selectors.js';
 import { mapCitations } from '../citations.js';
 import { augmentWithVision } from './visionRouting.js';
-import { quickDetectImagesWithCloudVision, extractTextWithCloudVisionPdf } from '../google/cloudVisionClient.js';
+import { quickDetectImagesWithCloudVision } from '../google/cloudVisionClient.js';
+import { extractTextWithAzureDocumentIntelligence } from '../azure/documentIntelligenceClient.js';
 import { safeErrorDetail } from '../../util/security.js';
 
 function basicLegibility({ text, numPages }) {
@@ -78,28 +79,29 @@ export async function extractDocument({
   }
   multimodal.google.cloud_vision_quick = quickVision;
 
-  // 1) Online-only extraction path: Cloud Vision OCR (no Docling dependency)
+  // 1) Online-only extraction path: Azure Document Intelligence OCR (no Docling dependency)
   if (onlineVisionOnly && filePath && isPdf) {
-    const cv = await extractTextWithCloudVisionPdf({
+    mark('azure_di_ocr_start');
+    const azure = await extractTextWithAzureDocumentIntelligence({
       filePath,
-      maxPages: Number(process.env.CLOUD_VISION_OCR_MAX_PAGES || 0) || 0,
     });
-    if (!cv || !cv.text) {
-      throw new Error('cloud_vision_required_failed');
+    if (!azure || !azure.text) {
+      mark('azure_di_ocr_error', { error: safeErrorDetail(azure?.error || 'azure_di_required_failed') });
+      throw new Error(azure?.error || 'azure_di_required_failed');
     }
-    text = cv.text;
-    meta = { ...meta, ...cv.meta, source: 'cloud_vision' };
-    raw = cv.raw;
-    blocks = cv.blocks || [];
-    used = 'cloud_vision';
+    text = azure.text;
+    meta = { ...meta, ...azure.meta, source: 'azure_document_intelligence' };
+    raw = azure.raw;
+    blocks = azure.blocks || [];
+    used = 'azure_document_intelligence';
     multimodal.google.cloud_vision_quick = {
-      enabled: true,
+      enabled: false,
       has_images: null,
-      reason: 'online_cloud_vision_only',
+      reason: 'online_azure_di_only',
       sampled_pages: [],
       detections: [],
     };
-    mark('cloud_vision_ocr_ok', { pages: meta.pages, text_len: text.length });
+    mark('azure_di_ocr_ok', { pages: meta.pages, text_len: text.length });
   }
 
   // 2) Local/offline extraction path: Docling first, pdf-parse fallback

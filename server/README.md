@@ -51,9 +51,10 @@ To keep the same document analysis behavior but run model inference via hosted A
 
 1. Copy `.env.example` to `.env`.
 2. Set `ONLINE_PROVIDER=gemini`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `VERIFIER_ENGINE=openai` (or any non-`llama`), and `OFFLINE_MODE=false`.
-   Also set Cloud Vision vars for online image-presence scanning:
-   - `GOOGLE_VISION_API_KEY` (or reuse `GEMINI_API_KEY`)
-   - Optional: `GOOGLE_CLOUD_ACCESS_TOKEN`
+   Also set Azure OCR vars for online extraction:
+   - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+   - `AZURE_DOCUMENT_INTELLIGENCE_KEY`
+   - Optional: `AZURE_DOCUMENT_INTELLIGENCE_MODEL=prebuilt-read`
 3. Set `LOCAL_CLASSIFIER=heuristic` and keep `VERIFY_SECOND_PASS=true`.
 4. Set `CORS_ORIGINS` to your deployed frontend domain.
 5. Keep `PUBLIC_API_RATE_LIMIT_*` enabled/tuned for abuse control.
@@ -61,10 +62,10 @@ To keep the same document analysis behavior but run model inference via hosted A
 Your existing endpoints stay the same, including redacted PDF output and citation evidence in results.
 With `ONLINE_PROVIDER=gemini` and request `model_mode=online`, streaming chunk summarization/moderation/PII-assist run through Gemini, while regex PII and manual redaction workflows remain active.
 OCR routing:
-- `model_mode=online`: Cloud Vision OCR is the extractor (Docling is not used).
+- `model_mode=online`: Azure Document Intelligence OCR is the extractor (Docling is not used).
 - `model_mode=local` (or `offline`): Docling is used for extraction and optional Cloud Vision quick-scan can run.
-- `no_images=true` only applies to local/offline mode. In online mode, Cloud Vision OCR still runs.
-- Online OCR uses synchronous Cloud Vision `images:annotate` only (no async/batch storage flow).
+- `no_images=true` only applies to local/offline mode. In online mode it is ignored.
+- Online OCR uses Azure analyze + polling with a bounded timeout and fails fast on OCR errors.
 In website Developer Mode, `Model Mode` can be switched per request: `online` or `local` (`offline` is treated as `local`).
 
 ## Security Notes
@@ -109,4 +110,4 @@ Configure `DOCLING_URL` to a REST service that accepts multipart upload at `/ext
 
 If `tesseract` is available in `PATH`, OCR is attempted for scanned/empty PDFs.
 
-In online mode, PDF OCR is performed by Cloud Vision synchronous `images:annotate` calls after server-side page rasterization.
+In online mode, PDF OCR is performed by Azure Document Intelligence (`prebuilt-read`) with inline polling.

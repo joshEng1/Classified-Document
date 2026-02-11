@@ -175,6 +175,19 @@ function resolveOnlineApiKey(provider) {
   return String(process.env.OPENAI_API_KEY || '').trim();
 }
 
+function getAzureDocumentIntelligenceConfig() {
+  const endpoint = String(process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT || '').trim();
+  const key = String(process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY || '').trim();
+  return {
+    provider: 'azure_document_intelligence',
+    endpoint_configured: Boolean(endpoint),
+    key_configured: Boolean(key),
+    configured: Boolean(endpoint && key),
+    model: String(process.env.AZURE_DOCUMENT_INTELLIGENCE_MODEL || 'prebuilt-read').trim() || 'prebuilt-read',
+    api_version: String(process.env.AZURE_DOCUMENT_INTELLIGENCE_API_VERSION || '2024-11-30').trim() || '2024-11-30',
+  };
+}
+
 function isGeminiOnlineMode(modelMode) {
   const mode = normalizeModelMode(modelMode, getDefaultModelMode());
   return mode === 'online' && resolveOnlineProvider() === 'gemini';
@@ -404,6 +417,7 @@ app.get('/api/provider-status', async (req, res) => {
     connected: false,
     model: null,
     detail: '',
+    ocr: getAzureDocumentIntelligenceConfig(),
   };
   try {
     if (mode !== 'online') {
@@ -428,6 +442,10 @@ app.get('/api/provider-status', async (req, res) => {
       const ping = await axios.get(url, { timeout: 12_000, headers });
       out.connected = ping.status >= 200 && ping.status < 300;
       out.detail = out.connected ? 'gemini_reachable' : `gemini_http_${ping.status}`;
+      if (!out.ocr.configured) {
+        out.connected = false;
+        out.detail = 'azure_di_not_configured';
+      }
       return res.json(out);
     }
 
@@ -441,6 +459,10 @@ app.get('/api/provider-status', async (req, res) => {
     const ping = await axios.get('https://api.openai.com/v1/models', { timeout: 12_000, headers: { Authorization: `Bearer ${openAiKey}` } });
     out.connected = ping.status >= 200 && ping.status < 300;
     out.detail = out.connected ? 'openai_reachable' : `openai_http_${ping.status}`;
+    if (!out.ocr.configured) {
+      out.connected = false;
+      out.detail = 'azure_di_not_configured';
+    }
     return res.json(out);
   } catch (e) {
     logServerError('provider-status', e);
