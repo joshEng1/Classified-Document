@@ -272,6 +272,10 @@
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
                 Download redacted PDF
               </a>
+              <button id="btn-open-manual-redact-report" type="button" class="btn-tertiary text-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-1 0v14m0-14L4 12m8-7l8 7"/></svg>
+                Review redactions
+              </button>
               <button id="btn-open-rules-2" class="btn-secondary text-sm" type="button">
                 <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                 Manage rules
@@ -308,6 +312,19 @@
                 <div>
                   <h3 class="text-base font-semibold tracking-tight">Evidence & Citations</h3>
                   <p class="mt-0.5 text-xs text-neutral-500">Approve or reject proposed redactions by page</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button id="evidence-filter-all" class="btn-tertiary text-xs evidence-filter active" type="button">All</button>
+                  <button id="evidence-filter-approved" class="btn-tertiary text-xs evidence-filter" type="button">Approved</button>
+                  <button id="evidence-filter-rejected" class="btn-tertiary text-xs evidence-filter" type="button">Rejected</button>
+                </div>
+              </div>
+              <div class="mt-3 flex items-center justify-between gap-3 text-xs text-neutral-500">
+                <div id="evidence-counts">Approved: 0 • Rejected: 0 • Total: 0</div>
+                <div class="flex items-center gap-2">
+                  <button id="evidence-prev" class="btn-tertiary text-xs" type="button" aria-label="Previous citations page">←</button>
+                  <span id="evidence-page">Page 1 / 1</span>
+                  <button id="evidence-next" class="btn-tertiary text-xs" type="button" aria-label="Next citations page">→</button>
                 </div>
               </div>
               <div id="evidence-list" class="grid gap-3"></div>
@@ -449,36 +466,38 @@
                   </button>
                   <button id="btn-generate-manual" class="btn-primary text-sm flex-1" type="button">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    Generate Redacted PDF
+	                    Generate Redacted Document
                   </button>
                 </div>
-                <a id="btn-download-manual" class="btn-secondary text-sm hidden text-center" href="#" download>
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                  Download Manual Redaction
-                </a>
-              </div>
+	                <a id="btn-download-manual" class="btn-secondary text-sm hidden text-center" href="#" download>
+	                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+	                  Download Manual Redaction
+	                </a>
+	              </div>
 
-              <div class="mt-6">
-                <div class="text-sm font-medium text-neutral-300">Active Boxes</div>
-                <div id="redact-box-list" class="mt-3 grid gap-2 max-h-48 overflow-auto"></div>
-              </div>
-              <div class="mt-6">
-                <div class="text-sm font-medium text-neutral-300">Text Candidates</div>
-                <div class="mt-2 text-xs text-neutral-500">Approve or reject text redactions from analysis.</div>
-                <div id="redact-text-list" class="mt-3 grid gap-2 max-h-48 overflow-auto"></div>
-              </div>
+	              <div class="mt-6">
+	                <div class="text-sm font-medium text-neutral-300">Page Preview</div>
+	                <div class="mt-3 redact-canvas">
+	                  <img id="redact-img" alt="Rendered PDF page" />
+	                  <div id="redact-box-layer" class="redact-layer" aria-hidden="true"></div>
+	                  <div id="redact-draw-layer" class="redact-layer" aria-hidden="true"></div>
+	                  <div id="redact-hit" class="redact-hit" aria-label="Draw redaction boxes"></div>
+	                </div>
+	                <div class="mt-2.5 text-xs text-neutral-500" id="redact-hint">Click and drag to create redaction areas</div>
+	              </div>
+
+	              <div class="mt-6">
+	                <div class="text-sm font-medium text-neutral-300">Active Boxes</div>
+	                <div id="redact-box-list" class="mt-3 grid gap-2 max-h-48 overflow-auto"></div>
+	              </div>
             </div>
 
-            <div class="card p-6">
-              <div class="text-sm font-medium text-neutral-300">Page Preview</div>
-              <div class="mt-3 redact-canvas">
-                <img id="redact-img" alt="Rendered PDF page" />
-                <div id="redact-box-layer" class="redact-layer" aria-hidden="true"></div>
-                <div id="redact-draw-layer" class="redact-layer" aria-hidden="true"></div>
-                <div id="redact-hit" class="redact-hit" aria-label="Draw redaction boxes"></div>
-              </div>
-              <div class="mt-2.5 text-xs text-neutral-500" id="redact-hint">Click and drag to create redaction areas</div>
-            </div>
+	            <div class="card p-6">
+	              <div class="text-sm font-medium text-neutral-300">Text Candidates</div>
+	              <div class="mt-2 text-xs text-neutral-500">Approve or reject text redactions from analysis.</div>
+	              <div id="redact-review-summary" class="mt-2 text-xs text-neutral-500">Approved: 0 - Rejected: 0 - Total: 0</div>
+	              <div id="redact-text-list" class="mt-3 grid gap-2 max-h-80 overflow-auto"></div>
+	            </div>
           </div>
         </div>
       </div>
@@ -497,3 +516,4 @@
     </div>
   </body>
 </html>
+

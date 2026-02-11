@@ -1,4 +1,5 @@
 const $ = (sel) => document.querySelector(sel);
+const REVIEW_PAGE_SIZE = 10;
 
 function nowTime() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -187,6 +188,8 @@ const state = {
   manual: {
     sessionId: null,
     originalName: null,
+    baseSessionId: null,
+    baseOriginalName: null,
     pages: 0,
     pageSignals: [],
     currentPage: 1,
@@ -210,6 +213,8 @@ const state = {
     final: null,
     redactedPdf: null,
     redactionReview: null,
+    reviewFilter: 'all',
+    reviewPage: 0,
   },
 };
 
@@ -306,6 +311,8 @@ function resetRunUi() {
     final: null,
     redactedPdf: null,
     redactionReview: null,
+    reviewFilter: 'all',
+    reviewPage: 0,
   };
 
   setStepState('step-extract', 'active', 'Waiting…');
@@ -342,10 +349,14 @@ function resetRunUi() {
   setText($('#kpi-guardian-sub'), '—');
   $('#evidence-list')?.replaceChildren();
   $('#redact-text-list')?.replaceChildren();
+  setText($('#evidence-counts'), 'Approved: 0 • Rejected: 0 • Total: 0');
+  setText($('#evidence-page'), 'Page 1 / 1');
+  setText($('#redact-review-summary'), 'Approved: 0 • Rejected: 0 • Total: 0');
   renderChips($('#safety-concerns'), []);
   renderChips($('#guardian-flags'), []);
   setText($('#audit-json'), '');
   hide($('#btn-download-redacted'));
+  updateEvidenceControls();
 }
 
 function updateMiniStats() {
@@ -463,17 +474,44 @@ function isPdfFile(file) {
 }
 
 async function deletePdfSession() {
-  const id = String(state.manual.sessionId || '').trim();
-  if (!id) return;
+  const displayId = String(state.manual.sessionId || '').trim();
+  const baseId = String(state.manual.baseSessionId || '').trim();
+  const ids = Array.from(new Set([displayId, baseId].filter(Boolean)));
+
   state.manual.sessionId = null;
+  state.manual.originalName = null;
+  state.manual.baseSessionId = null;
+  state.manual.baseOriginalName = null;
   state.manual.pages = 0;
   state.manual.pageSignals = [];
   state.manual.boxes = [];
+  for (const id of ids) {
+    try {
+      const url = joinUrl(state.apiBase, `/api/pdf/session/${encodeURIComponent(id)}`);
+      await fetchJson(url, { method: 'DELETE' });
+    } catch {
+      // Best-effort; session cleanup is optional.
+    }
+  }
+}
+
+async function clearManualSessionSlot(slot) {
+  const isBase = String(slot || '').toLowerCase() === 'base';
+  const idField = isBase ? 'baseSessionId' : 'sessionId';
+  const keyField = isBase ? 'baseOriginalName' : 'originalName';
+  const otherIdField = isBase ? 'sessionId' : 'baseSessionId';
+  const id = String(state.manual[idField] || '').trim();
+  const otherId = String(state.manual[otherIdField] || '').trim();
+
+  state.manual[idField] = null;
+  state.manual[keyField] = null;
+  if (!id || id === otherId) return;
+
   try {
     const url = joinUrl(state.apiBase, `/api/pdf/session/${encodeURIComponent(id)}`);
     await fetchJson(url, { method: 'DELETE' });
   } catch {
-    // Best-effort; session cleanup is optional.
+    // Best-effort cleanup.
   }
 }
 
@@ -615,7 +653,7 @@ function setCandidateDecision(candidateId, approved) {
   if (!review.decisionsMap || typeof review.decisionsMap !== 'object') review.decisionsMap = {};
   review.decisionsMap[String(candidateId)] = approved ? 'approve' : 'reject';
   syncManualAiBoxesFromReview();
-  renderEvidence(review.candidates);
+  renderEvidence();
   renderManualBoxList();
   renderManualBoxesOnPage();
   renderManualTextReviewList();
@@ -635,6 +673,81 @@ function applyRedactionReview(reviewPayload) {
     decisionsMap,
   };
   syncManualAiBoxesFromReview();
+}
+
+function resetReviewDecisionsToDefault() {
+  const review = state.run?.redactionReview;
+  const candidates = Array.isArray(review?.candidates) ? review.candidates : [];
+  if (!review || !candidates.length) return;
+  const defaults = {};
+  for (const c of candidates) defaults[String(c.id)] = c?.approved_default === false ? 'reject' : 'approve';
+  review.decisionsMap = defaults;
+  syncManualAiBoxesFromReview();
+  renderEvidence();
+  renderManualBoxList();
+  renderManualBoxesOnPage();
+  renderManualTextReviewList();
+  hide($('#btn-download-manual'));
+}
+
+function getReviewSummaryCounts() {
+  const review = state.run?.redactionReview;
+  const list = Array.isArray(review?.candidates) ? review.candidates : [];
+  let approved = 0;
+  let rejected = 0;
+  for (const c of list) {
+    if (isCandidateApproved(c)) approved++;
+    else rejected++;
+  }
+  return { total: list.length, approved, rejected };
+}
+
+function getFilteredReviewCandidates() {
+  const review = state.run?.redactionReview;
+  const list = Array.isArray(review?.candidates) ? review.candidates : [];
+  const filter = String(state.run?.reviewFilter || 'all').toLowerCase();
+  if (filter === 'approved') return list.filter((c) => isCandidateApproved(c));
+  if (filter === 'rejected') return list.filter((c) => !isCandidateApproved(c));
+  return list;
+}
+
+function setReviewFilter(filter) {
+  const next = String(filter || 'all').toLowerCase();
+  state.run.reviewFilter = (next === 'approved' || next === 'rejected') ? next : 'all';
+  state.run.reviewPage = 0;
+  renderEvidence();
+}
+
+function shiftReviewPage(delta) {
+  const filtered = getFilteredReviewCandidates();
+  const pages = Math.max(1, Math.ceil(filtered.length / REVIEW_PAGE_SIZE));
+  state.run.reviewPage = clamp((Number(state.run.reviewPage || 0) || 0) + Number(delta || 0), 0, pages - 1);
+  renderEvidence();
+}
+
+function updateEvidenceControls() {
+  const counts = getReviewSummaryCounts();
+  const countsEl = $('#evidence-counts');
+  if (countsEl) countsEl.textContent = `Approved: ${counts.approved} • Rejected: ${counts.rejected} • Total: ${counts.total}`;
+
+  const summaryEl = $('#redact-review-summary');
+  if (summaryEl) summaryEl.textContent = `Approved: ${counts.approved} • Rejected: ${counts.rejected} • Total: ${counts.total}`;
+
+  const filtered = getFilteredReviewCandidates();
+  const pageCount = Math.max(1, Math.ceil(filtered.length / REVIEW_PAGE_SIZE));
+  state.run.reviewPage = clamp(Number(state.run.reviewPage || 0) || 0, 0, pageCount - 1);
+  const pageLabel = $('#evidence-page');
+  if (pageLabel) pageLabel.textContent = `Page ${state.run.reviewPage + 1} / ${pageCount}`;
+
+  const prev = $('#evidence-prev');
+  const next = $('#evidence-next');
+  if (prev) prev.disabled = state.run.reviewPage <= 0;
+  if (next) next.disabled = state.run.reviewPage >= pageCount - 1;
+
+  const f = String(state.run.reviewFilter || 'all');
+  $('#evidence-filter-all')?.classList.toggle('active', f === 'all');
+  $('#evidence-filter-approved')?.classList.toggle('active', f === 'approved');
+  $('#evidence-filter-rejected')?.classList.toggle('active', f === 'rejected');
 }
 
 function renderManualTextReviewList() {
@@ -818,11 +931,62 @@ async function createPdfSession() {
   const key = `${state.file.name}:${state.file.size}`;
   if (state.manual.sessionId && state.manual.originalName === key) return state.manual.sessionId;
 
-  // Cleanup old session if any.
-  await deletePdfSession();
+  // Cleanup old display session if any.
+  await clearManualSessionSlot('display');
 
   const form = new FormData();
   form.append('file', state.file);
+  const url = joinUrl(state.apiBase, '/api/pdf/session');
+  const res = await fetchJson(url, { method: 'POST', body: form });
+  if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
+
+  state.manual.sessionId = String(res.id);
+  state.manual.originalName = key;
+  state.manual.pageSignals = Array.isArray(res?.page_signals) ? res.page_signals : [];
+  setManualPages(Number(res?.pages || 0) || 0);
+  return state.manual.sessionId;
+}
+
+async function createBasePdfSession() {
+  if (!state.file || !isPdfFile(state.file)) throw new Error('pdf_required');
+  const key = `${state.file.name}:${state.file.size}`;
+  if (state.manual.baseSessionId && state.manual.baseOriginalName === key) return state.manual.baseSessionId;
+
+  if (state.manual.sessionId && state.manual.originalName === key) {
+    state.manual.baseSessionId = state.manual.sessionId;
+    state.manual.baseOriginalName = key;
+    return state.manual.baseSessionId;
+  }
+
+  await clearManualSessionSlot('base');
+
+  const form = new FormData();
+  form.append('file', state.file);
+  const url = joinUrl(state.apiBase, '/api/pdf/session');
+  const res = await fetchJson(url, { method: 'POST', body: form });
+  if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
+
+  state.manual.baseSessionId = String(res.id);
+  state.manual.baseOriginalName = key;
+  return state.manual.baseSessionId;
+}
+
+async function createReviewDisplayPdfSession() {
+  const rel = String(state.run?.redactedPdf?.url || '').trim();
+  if (!rel) throw new Error('No generated redacted PDF available yet');
+  const key = `redacted:${rel}`;
+  if (state.manual.sessionId && state.manual.originalName === key) return state.manual.sessionId;
+
+  await clearManualSessionSlot('display');
+
+  const pdfUrl = joinUrl(state.apiBase, rel);
+  const pdfRes = await fetch(pdfUrl, { cache: 'no-store' });
+  if (!pdfRes.ok) throw new Error(`redacted_fetch_http_${pdfRes.status}`);
+  const pdfBlob = await pdfRes.blob();
+  if (!pdfBlob || !Number(pdfBlob.size || 0)) throw new Error('redacted_fetch_empty');
+
+  const form = new FormData();
+  form.append('file', pdfBlob, 'review-redacted.pdf');
   const url = joinUrl(state.apiBase, '/api/pdf/session');
   const res = await fetchJson(url, { method: 'POST', body: form });
   if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
@@ -949,7 +1113,7 @@ function finishManualDrawing() {
 }
 
 async function generateManualRedaction() {
-  const id = String(state.manual.sessionId || '').trim();
+  const id = String(state.manual.baseSessionId || state.manual.sessionId || '').trim();
   if (!id) return toast('error', 'No session', 'Open manual redaction after selecting a PDF');
 
   const review = state.run?.redactionReview;
@@ -1138,11 +1302,12 @@ async function saveRule() {
   }
 }
 
-function renderEvidence(candidates) {
+function renderEvidence() {
   const root = $('#evidence-list');
   if (!root) return;
   root.innerHTML = '';
-  const list = Array.isArray(candidates) ? candidates : [];
+  const list = getFilteredReviewCandidates();
+  updateEvidenceControls();
   if (!list.length) {
     const empty = document.createElement('div');
     empty.className = 'muted text-sm';
@@ -1151,7 +1316,11 @@ function renderEvidence(candidates) {
     return;
   }
 
-  for (const c of list.slice(0, 60)) {
+  const page = Number(state.run.reviewPage || 0) || 0;
+  const start = page * REVIEW_PAGE_SIZE;
+  const view = list.slice(start, start + REVIEW_PAGE_SIZE);
+
+  for (const c of view) {
     const approved = isCandidateApproved(c);
     const card = document.createElement('div');
     card.className = 'evidence-item';
@@ -1261,7 +1430,7 @@ function renderFinalReport(data) {
   setText($('#kpi-guardian'), String(gFlags.length));
   setText($('#kpi-guardian-sub'), data?.guardian?.unsafe ? 'Unsafe flagged' : 'No unsafe flags');
 
-  renderEvidence(Array.isArray(state.run?.redactionReview?.candidates) ? state.run.redactionReview.candidates : []);
+  renderEvidence();
   renderManualTextReviewList();
   renderChips($('#safety-concerns'), Array.isArray(data?.safety?.categories) ? data.safety.categories : [], 'No safety concerns detected.');
   renderChips($('#guardian-flags'), gFlags, 'No guardian flags.');
@@ -1625,25 +1794,39 @@ function wireUi() {
   });
 
   // Manual redaction modal
-  const openManual = async () => {
+  const openManual = async ({ fromReport = false } = {}) => {
     try {
       if (!state.file) throw new Error('No file selected');
       if (!isPdfFile(state.file)) throw new Error('Manual redaction is only available for PDFs');
       openRedactModal();
-      setText($('#redact-hint'), 'Preparing session…');
-      await createPdfSession();
+      if (fromReport) {
+        resetReviewDecisionsToDefault();
+        setText($('#redact-hint'), 'Preparing generated redacted preview...');
+        await createBasePdfSession();
+        await createReviewDisplayPdfSession();
+      } else {
+        setText($('#redact-hint'), 'Preparing session...');
+        await createPdfSession();
+        state.manual.baseSessionId = state.manual.sessionId;
+        state.manual.baseOriginalName = state.manual.originalName;
+      }
       setManualPage(1);
       setText($('#redact-hint'), `Rendering page 1 • DPI ${state.manual.dpi}`);
       await renderManualPage(1);
       renderManualBoxList();
-      setText($('#redact-hint'), 'Drag to draw boxes. Click Generate when ready.');
+      if (fromReport) {
+        setText($('#redact-hint'), 'Previewing generated redactions. Approve/reject candidates, add boxes, then Generate to rebuild from the original PDF.');
+      } else {
+        setText($('#redact-hint'), 'Drag to draw boxes. Click Generate when ready.');
+      }
     } catch (e) {
       toast('error', 'Manual redaction unavailable', String(e?.message || e));
       closeRedactModal();
     }
   };
 
-  $('#btn-open-manual-redact')?.addEventListener('click', () => void openManual());
+  $('#btn-open-manual-redact')?.addEventListener('click', () => void openManual({ fromReport: false }));
+  $('#btn-open-manual-redact-report')?.addEventListener('click', () => void openManual({ fromReport: true }));
   $('#btn-close-redact')?.addEventListener('click', closeRedactModal);
   $('#redact-overlay')?.addEventListener('click', closeRedactModal);
 
@@ -1665,6 +1848,12 @@ function wireUi() {
     hide($('#btn-download-manual'));
   });
   $('#btn-generate-manual')?.addEventListener('click', () => void generateManualRedaction());
+
+  $('#evidence-filter-all')?.addEventListener('click', () => setReviewFilter('all'));
+  $('#evidence-filter-approved')?.addEventListener('click', () => setReviewFilter('approved'));
+  $('#evidence-filter-rejected')?.addEventListener('click', () => setReviewFilter('rejected'));
+  $('#evidence-prev')?.addEventListener('click', () => shiftReviewPage(-1));
+  $('#evidence-next')?.addEventListener('click', () => shiftReviewPage(1));
 
   // Drawing interactions
   const hit = $('#redact-hit');

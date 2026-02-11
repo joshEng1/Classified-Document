@@ -1107,6 +1107,12 @@ input[type="range"]::-webkit-slider-thumb:hover {
   color: rgba(252, 165, 165, 0.95);
 }
 
+.evidence-filter.active {
+  border-color: rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.18);
+  color: rgba(199, 210, 254, 0.95);
+}
+
 .tag {
   display: inline-flex;
   align-items: center;
