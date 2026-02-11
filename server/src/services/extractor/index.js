@@ -94,6 +94,9 @@ export async function extractDocument({
     raw = azure.raw;
     blocks = azure.blocks || [];
     used = 'azure_document_intelligence';
+    if (azure?.notice?.code === 'azure_di_page_cap_notice') {
+      mark('azure_di_page_cap_notice', { detail: String(azure?.notice?.detail || '') });
+    }
     multimodal.google.cloud_vision_quick = {
       enabled: false,
       has_images: null,

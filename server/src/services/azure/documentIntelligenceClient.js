@@ -14,7 +14,7 @@ export async function extractTextWithAzureDocumentIntelligence({ filePath }) {
   const apiVersion = String(process.env.AZURE_DOCUMENT_INTELLIGENCE_API_VERSION || DEFAULT_API_VERSION).trim() || DEFAULT_API_VERSION;
   const timeoutMs = Math.max(5000, Number(process.env.AZURE_DOCUMENT_INTELLIGENCE_TIMEOUT_MS || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
   const pollIntervalMs = Math.max(250, Number(process.env.AZURE_DOCUMENT_INTELLIGENCE_POLL_INTERVAL_MS || DEFAULT_POLL_INTERVAL_MS) || DEFAULT_POLL_INTERVAL_MS);
-  const maxPages = Math.max(0, Number(process.env.AZURE_DOCUMENT_INTELLIGENCE_MAX_PAGES || 0) || 0);
+  const maxPages = parseEnvNonNegativeInt(process.env.AZURE_DOCUMENT_INTELLIGENCE_MAX_PAGES, 0);
 
   if (!filePath) return { error: 'azure_di_missing_file' };
   if (!endpoint) return { error: 'azure_di_missing_endpoint' };
@@ -48,7 +48,7 @@ export async function extractTextWithAzureDocumentIntelligence({ filePath }) {
 
     // Some deployments can return a completed payload directly.
     if (!operationLocation) {
-      const parsedInline = parseAnalyzeResult(start?.data, { maxPages });
+      const parsedInline = parseAnalyzeResult(start?.data, { requestedMaxPages: maxPages });
       if (parsedInline.text) return parsedInline;
       return { error: 'azure_di_missing_operation_location' };
     }
@@ -73,7 +73,7 @@ export async function extractTextWithAzureDocumentIntelligence({ filePath }) {
       const state = String(poll?.data?.status || '').trim().toLowerCase();
       if (state) lastStatus = state;
       if (state === 'succeeded') {
-        const parsed = parseAnalyzeResult(poll?.data, { maxPages });
+        const parsed = parseAnalyzeResult(poll?.data, { requestedMaxPages: maxPages });
         if (!parsed.text) return { error: 'azure_di_empty_result' };
         parsed.raw = {
           ...(parsed.raw || {}),
@@ -98,10 +98,10 @@ function buildAnalyzeUrl({ endpoint, model, apiVersion, maxPages }) {
   return `${endpoint}/documentintelligence/documentModels/${encodeURIComponent(model)}:analyze?${query.toString()}`;
 }
 
-function parseAnalyzeResult(payload, { maxPages = 0 } = {}) {
+function parseAnalyzeResult(payload, { requestedMaxPages = 0 } = {}) {
   const analyzeResult = payload?.analyzeResult || payload?.result?.analyzeResult || payload?.result || {};
   const pagesRaw = Array.isArray(analyzeResult?.pages) ? analyzeResult.pages : [];
-  const pages = maxPages > 0 ? pagesRaw.slice(0, maxPages) : pagesRaw;
+  const pages = requestedMaxPages > 0 ? pagesRaw.slice(0, requestedMaxPages) : pagesRaw;
 
   const blocks = [];
   for (const p of pages) {
@@ -146,19 +146,28 @@ function parseAnalyzeResult(payload, { maxPages = 0 } = {}) {
   let text = String(analyzeResult?.content || '').trim();
   if (!text) text = blocks.map((b) => b.text).join('\n\n').trim();
   if (text && !blocks.length) blocks.push({ page: 1, text });
+  const pagesReturned = pages.length || (blocks.length ? Math.max(...blocks.map((b) => Number(b.page || 0))) : 0);
 
   const parsed = {
     text,
     meta: {
-      pages: pages.length || (blocks.length ? Math.max(...blocks.map((b) => Number(b.page || 0))) : 0),
+      pages: pagesReturned,
       source: 'azure_document_intelligence',
     },
     blocks,
     raw: {
       pages: pages.length,
+      requested_max_pages: requestedMaxPages,
+      pages_returned: pagesReturned,
       model_id: String(payload?.analyzeResult?.modelId || payload?.modelId || ''),
     },
   };
+  if (requestedMaxPages > 0 && pagesReturned > 0 && pagesReturned < requestedMaxPages) {
+    parsed.notice = {
+      code: 'azure_di_page_cap_notice',
+      detail: `Azure returned ${pagesReturned} page(s) while ${requestedMaxPages} were requested; document may have fewer pages or service-tier limits may apply.`,
+    };
+  }
   return parsed;
 }
 
@@ -183,4 +192,14 @@ function summarizeOperationLocation(value) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseEnvNonNegativeInt(value, fallback) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+  const clean = raw.split('#')[0].trim();
+  if (!clean) return fallback;
+  const n = Number.parseInt(clean, 10);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return n;
 }

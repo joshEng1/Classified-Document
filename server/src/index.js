@@ -259,6 +259,120 @@ function mergeSimplePiiWithModelFindings({ pii, text, meta, modelFindings }) {
   };
 }
 
+function normalizeTextCandidate(value, maxLen = 320) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLen ? text.slice(0, maxLen) : text;
+}
+
+function normalizeBoxCandidate(bbox) {
+  const arr = Array.isArray(bbox) && bbox.length === 4 ? bbox.map(Number) : null;
+  if (!arr || arr.some((v) => !Number.isFinite(v))) return null;
+  return arr.map((v) => Number(v.toFixed(3)));
+}
+
+function stableRedactionCandidateId(key) {
+  return `rc_${crypto.createHash('sha1').update(String(key || '')).digest('hex').slice(0, 16)}`;
+}
+
+function buildRedactionReviewCandidates({ policy, pii, multimodal, manualBoxes = [] }) {
+  const out = [];
+  const seen = new Set();
+
+  function pushText({ source, page, label, text }) {
+    const p = Number(page || 0) || 0;
+    const t = normalizeTextCandidate(text);
+    const l = normalizeTextCandidate(label || source || 'text', 80);
+    if (!p || !t) return;
+    const key = `text|${p}|${l.toLowerCase()}|${t.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      id: stableRedactionCandidateId(key),
+      source,
+      kind: 'text',
+      page: p,
+      label: l,
+      text: t,
+      approved_default: true,
+    });
+  }
+
+  function pushBox({ source, page, label, bbox }) {
+    const p = Number(page || 0) || 0;
+    const bb = normalizeBoxCandidate(bbox);
+    const l = normalizeTextCandidate(label || source || 'box', 80);
+    if (!p || !bb) return;
+    const key = `box|${p}|${l.toLowerCase()}|${bb.join(',')}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      id: stableRedactionCandidateId(key),
+      source,
+      kind: 'box',
+      page: p,
+      label: l,
+      bbox: bb,
+      approved_default: true,
+    });
+  }
+
+  for (const it of (pii?.items || [])) {
+    pushText({
+      source: 'pii',
+      page: it?.page,
+      label: it?.type || 'pii',
+      text: it?.value,
+    });
+  }
+
+  for (const c of (policy?.citations || [])) {
+    pushText({
+      source: 'policy',
+      page: c?.page,
+      label: c?.type || 'policy',
+      text: c?.text,
+    });
+  }
+
+  for (const b of (multimodal?.redaction_boxes || [])) {
+    pushBox({
+      source: 'vision',
+      page: b?.page,
+      label: b?.label || 'vision',
+      bbox: b?.bbox,
+    });
+  }
+
+  for (const b of (manualBoxes || [])) {
+    pushBox({
+      source: 'manual',
+      page: b?.page,
+      label: b?.label || 'manual',
+      bbox: b?.bbox,
+    });
+  }
+
+  const byKind = out.reduce((acc, c) => {
+    acc[c.kind] = (acc[c.kind] || 0) + 1;
+    return acc;
+  }, {});
+  const bySource = out.reduce((acc, c) => {
+    acc[c.source] = (acc[c.source] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    summary: {
+      total: out.length,
+      approved_default: out.length,
+      by_kind: byKind,
+      by_source: bySource,
+    },
+    candidates: out,
+  };
+}
+
 function resolveLocalClassifierEngine(modelMode) {
   const mode = normalizeModelMode(modelMode, getDefaultModelMode());
   if (mode === 'online') return 'heuristic';
@@ -528,6 +642,11 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
     const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta, multimodal: extraction.multimodal });
     const equipment = detectEquipment(extraction.text || '', extraction.meta);
     const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment, multimodal: extraction.multimodal });
+    const redaction_review = buildRedactionReviewCandidates({
+      policy,
+      pii,
+      multimodal: extraction.multimodal,
+    });
 
     // 3) Build prompts (used by llama local or verifier)
     const prompts = buildPrompts({
@@ -626,6 +745,7 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
       policy,
       equipment,
       evidence: extraction.evidence,
+      redaction_review,
       status_updates: extraction.status,
       local,
       routed: route.routed,
@@ -817,6 +937,11 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     const safety = assessSafety({ text: extraction.text || '', meta: extraction.meta, multimodal: extraction.multimodal });
     const equipment = detectEquipment(extraction.text || '', extraction.meta);
     const policy = classifyPolicy({ text: extraction.text || '', meta: extraction.meta, pii, safety, equipment, multimodal: extraction.multimodal });
+    const redaction_review = buildRedactionReviewCandidates({
+      policy,
+      pii,
+      multimodal: extraction.multimodal,
+    });
 
     // Evidence and final
     const prompts = buildPrompts({
@@ -876,6 +1001,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       route_reason: route.reason,
       verifier,
       evidence: extraction.evidence,
+      redaction_review,
       final,
       chunks: { total: chunks.length },
     });
@@ -1179,6 +1305,7 @@ app.post('/api/pdf/redact', async (req, res) => {
   try {
     const id = String(req.body?.id || '').trim();
     const boxes = Array.isArray(req.body?.boxes) ? req.body.boxes : [];
+    const searchTextsInput = Array.isArray(req.body?.search_texts) ? req.body.search_texts : [];
     const detectPii = req.body?.detect_pii === false ? false : true;
     const includeRules = req.body?.include_rules === false ? false : true;
 
@@ -1198,7 +1325,19 @@ app.post('/api/pdf/redact', async (req, res) => {
       .filter(Boolean)
       .slice(0, 200);
 
-    let searchTexts = [];
+    const cleanSearchTexts = searchTextsInput
+      .map((it) => {
+        const page = Number(it?.page || 0) || 0;
+        const text = normalizeTextCandidate(it?.text, 320);
+        const label = normalizeTextCandidate(it?.label || 'review', 80) || 'review';
+        const candidateId = normalizeTextCandidate(it?.candidate_id || '', 80);
+        if (!page || !text) return null;
+        return { page, text, label, candidate_id: candidateId || undefined };
+      })
+      .filter(Boolean)
+      .slice(0, 200);
+
+    let searchTexts = [...cleanSearchTexts];
     if (includeRules) {
       const signals = await getPdfSignals({ filePath });
       const pagesTotal = Math.max(1, Number(signals?.pages || 1));
@@ -1206,11 +1345,12 @@ app.post('/api/pdf/redact', async (req, res) => {
       for (const r of rules.slice(0, 20)) {
         for (let p = 1; p <= pagesTotal; p++) {
           searchTexts.push({ page: p, text: r.text, label: `user_${r.label || 'rule'}` });
-          if (searchTexts.length >= 120) break;
+          if (searchTexts.length >= 200) break;
         }
-        if (searchTexts.length >= 120) break;
+        if (searchTexts.length >= 200) break;
       }
     }
+    searchTexts = dedupeSearchTexts(searchTexts).slice(0, 200);
 
     const pdfBytes = await redactPdf({ filePath, boxes: cleanBoxes, searchTexts, detectPii });
     if (!pdfBytes || !Buffer.isBuffer(pdfBytes) || pdfBytes.length < 20) {
@@ -1229,6 +1369,10 @@ app.post('/api/pdf/redact', async (req, res) => {
         boxes: cleanBoxes.length,
         search_texts: searchTexts.length,
         pii: detectPii,
+      },
+      applied: {
+        boxes_applied: cleanBoxes.length,
+        search_texts_applied: searchTexts.length,
       },
     });
   } catch (e) {
@@ -1385,6 +1529,28 @@ function buildSearchTexts({ pii, safety, guardian, meta }) {
 
   // Avoid pathological payload sizes
   return out.slice(0, 120);
+}
+
+function dedupeSearchTexts(items) {
+  const arr = Array.isArray(items) ? items : [];
+  const seen = new Set();
+  const out = [];
+  for (const it of arr) {
+    const page = Number(it?.page || 0) || 0;
+    const text = normalizeTextCandidate(it?.text, 320);
+    const label = normalizeTextCandidate(it?.label || 'text', 80) || 'text';
+    if (!page || !text) continue;
+    const key = `${page}|${label.toLowerCase()}|${text.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      page,
+      text,
+      label,
+      candidate_id: it?.candidate_id ? normalizeTextCandidate(it.candidate_id, 80) : undefined,
+    });
+  }
+  return out;
 }
 
 function aggregateModeration(items) {

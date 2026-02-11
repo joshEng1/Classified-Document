@@ -32,7 +32,7 @@ docker compose up -d docling
 From the repo root:
 
 ```powershell
-docker compose up -d --build
+docker compose --env-file .\server\.env up -d --build
 ```
 
 Then open `http://localhost:5055/`.
@@ -66,6 +66,8 @@ OCR routing:
 - `model_mode=local` (or `offline`): Docling is used for extraction and optional Cloud Vision quick-scan can run.
 - `no_images=true` only applies to local/offline mode. In online mode it is ignored.
 - Online OCR uses Azure analyze + polling with a bounded timeout and fails fast on OCR errors.
+- If fewer pages are returned than requested, the extractor adds `azure_di_page_cap_notice` in status for Developer Mode visibility.
+- Redaction output can be reviewed per-run via approve/reject decisions before generation.
 In website Developer Mode, `Model Mode` can be switched per request: `online` or `local` (`offline` is treated as `local`).
 
 ## Security Notes

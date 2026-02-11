@@ -45,7 +45,7 @@ Or start it manually (no helper script):
 4) Start the Docling + server containers:
 
 ```powershell
-docker compose up -d --build
+docker compose --env-file .\server\.env up -d --build
 ```
 
 5) Open: `http://localhost:5055/`
@@ -122,6 +122,8 @@ OCR routing rule:
 - `model_mode=local` (or `offline`): extraction uses Docling (with pdf-parse fallback) and can run Cloud Vision quick scan for routing/signals.
 - `no_images=true` is only honored in local/offline mode. In online mode it is ignored.
 - Online OCR uses Azure Document Intelligence analyze + polling (inline, timeout-bounded) and fails fast if OCR fails.
+- If fewer pages are returned than requested, Developer Mode logs `azure_di_page_cap_notice` (commonly due to free-tier limits).
+- Redaction review is decision-based: approve/reject candidates, then generate the PDF from approved items only.
 
 Developer UI note: in website Developer Mode, `Model Mode` supports `Online API` and `Local / Offline` (offline is treated the same as local).
 
@@ -153,3 +155,4 @@ Developer UI note: in website Developer Mode, `Model Mode` supports `Online API`
 
 - Renaming the repo folder changes Docker Compose’s default project name, which changes container names. If you rely on stable names, use `docker compose -p <name> ...` or set `COMPOSE_PROJECT_NAME`.
 - `start-system.sh` is a WSL helper but currently has a hard-coded `PROJECT_DIR` that must match your local path.
+- Docker Compose interpolation does not read `server/.env` automatically. Use `docker compose --env-file .\server\.env ...` or mirror required vars into a root `.env`.
