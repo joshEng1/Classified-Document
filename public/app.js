@@ -182,6 +182,13 @@ const state = {
     lastHealthError: null,
     lastProviderStatus: null,
   },
+  terms: {
+    accepted: false,
+    onlineAccepted: false,
+    requiresOnline: false,
+    onAccept: null,
+  },
+  cleanupRefs: new Set(),
   file: null,
   previewUrl: null,
   previewOpen: false,
@@ -560,6 +567,83 @@ function renderPreviewUi() {
     hide(panel);
     frame.src = 'about:blank';
   }
+}
+
+function hasTermsConsentForMode(mode) {
+  const normalized = normalizeModelMode(mode);
+  if (!state.terms.accepted) return false;
+  if (normalized === 'online' && !state.terms.onlineAccepted) return false;
+  return true;
+}
+
+function openTermsModal({ online = false } = {}) {
+  const modal = $('#tos-modal');
+  if (!modal) return;
+  state.terms.requiresOnline = Boolean(online);
+  const note = $('#tos-mode-note');
+  if (note) {
+    note.textContent = online
+      ? 'Online mode selected: this run uses public-facing hosted APIs.'
+      : 'You must agree to continue using this demo.';
+  }
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-lock');
+}
+
+function closeTermsModal() {
+  const modal = $('#tos-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-lock');
+}
+
+function requireTerms({ online = false, onAccept = null } = {}) {
+  state.terms.onAccept = typeof onAccept === 'function' ? onAccept : null;
+  openTermsModal({ online });
+}
+
+function acceptTerms() {
+  state.terms.accepted = true;
+  if (state.terms.requiresOnline) state.terms.onlineAccepted = true;
+  const cb = state.terms.onAccept;
+  state.terms.onAccept = null;
+  closeTermsModal();
+  if (typeof cb === 'function') cb();
+}
+
+function trackAnalyzeCleanupRef(ref) {
+  const id = String(ref || '').trim();
+  if (!/^ar_[A-Za-z0-9_]+$/.test(id)) return;
+  if (!(state.cleanupRefs instanceof Set)) state.cleanupRefs = new Set();
+  state.cleanupRefs.add(id);
+}
+
+function flushAnalyzeResultCleanup() {
+  const refs = state.cleanupRefs instanceof Set ? Array.from(state.cleanupRefs) : [];
+  if (!refs.length) return;
+  const url = joinUrl(state.apiBase, '/api/delete-analyze-result');
+  const payload = JSON.stringify({ refs });
+  let sent = false;
+  try {
+    if (navigator?.sendBeacon) {
+      const blob = new Blob([payload], { type: 'application/json' });
+      sent = navigator.sendBeacon(url, blob);
+    }
+  } catch { }
+  if (!sent) {
+    try {
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true,
+        cache: 'no-store',
+      }).catch(() => { });
+    } catch { }
+  }
+  if (state.cleanupRefs instanceof Set) state.cleanupRefs.clear();
 }
 
 function openRedactModal() {
@@ -1383,6 +1467,7 @@ function renderFinalReport(data) {
   state.run.policy = data?.policy || state.run.policy;
   state.run.final = data?.final || state.run.final;
   state.run.redactedPdf = data?.redacted_pdf || null;
+  trackAnalyzeCleanupRef(data?.analyze_cleanup_ref);
   if (data?.redaction_review) {
     applyRedactionReview(data.redaction_review);
   } else {
@@ -1613,6 +1698,11 @@ async function startAnalysis() {
   const noImages = Boolean($('#no-images')?.checked);
   const temp = Number($('#temperature')?.value ?? 0) || 0;
   const modelMode = normalizeModelMode(state.ui.modelMode);
+  if (!hasTermsConsentForMode(modelMode)) {
+    requireTerms({ online: modelMode === 'online' });
+    toast('error', 'Terms required', 'You must agree to the terms before using this demo.');
+    return;
+  }
   setText($('#hero-kpi-mode'), noImages ? 'Text-only' : 'Hybrid');
 
   resetRunUi();
@@ -1715,20 +1805,36 @@ function wireUi() {
   if (modelMode) {
     modelMode.value = state.ui.modelMode;
     modelMode.addEventListener('change', () => {
-      setModelMode(modelMode.value);
-      toast('success', 'Model mode updated', state.ui.modelMode === 'local' ? 'Local/Offline mode selected' : 'Online API mode selected');
-      if (state.ui.modelMode === 'online') {
-        void checkProviderStatus(true);
+      const nextMode = normalizeModelMode(modelMode.value);
+      const applyMode = () => {
+        setModelMode(nextMode);
+        toast('success', 'Model mode updated', state.ui.modelMode === 'local' ? 'Local/Offline mode selected' : 'Online API mode selected');
+        if (state.ui.modelMode === 'online') {
+          void checkProviderStatus(true);
+        }
+      };
+      if (!hasTermsConsentForMode(nextMode)) {
+        modelMode.value = state.ui.modelMode;
+        requireTerms({ online: nextMode === 'online', onAccept: applyMode });
+        return;
       }
+      applyMode();
     });
   }
 
   $('#btn-check-provider')?.addEventListener('click', () => void checkProviderStatus(false));
+  $('#btn-tos-agree')?.addEventListener('click', acceptTerms);
 
   // Dropzone / file selection
   const drop = $('#dropzone');
   const input = $('#file-input');
-  const pick = () => input?.click();
+  const pick = () => {
+    if (!hasTermsConsentForMode(state.ui.modelMode)) {
+      requireTerms({ online: state.ui.modelMode === 'online' });
+      return;
+    }
+    input?.click();
+  };
   drop?.addEventListener('click', pick);
   drop?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
@@ -1877,7 +1983,16 @@ function wireUi() {
   hit?.addEventListener('pointercancel', end);
 
   // Cleanup blob URL when leaving
-  window.addEventListener('beforeunload', () => { destroyPreviewUrl(); void deletePdfSession(); });
+  window.addEventListener('pagehide', () => {
+    flushAnalyzeResultCleanup();
+    destroyPreviewUrl();
+    void deletePdfSession();
+  });
+  window.addEventListener('beforeunload', () => {
+    flushAnalyzeResultCleanup();
+    destroyPreviewUrl();
+    void deletePdfSession();
+  });
   window.addEventListener('resize', () => {
     // Keep manual redaction overlay aligned if the viewport size changes.
     renderManualBoxesOnPage();
@@ -1886,6 +2001,7 @@ function wireUi() {
   // Initialize
   resetRunUi();
   renderPreviewUi();
+  requireTerms({ online: state.ui.modelMode === 'online' });
 }
 
 wireUi();

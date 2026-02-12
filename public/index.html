@@ -396,6 +396,29 @@
         </div>
       </div>
 
+      <!-- Terms modal -->
+      <div id="tos-modal" class="modal hidden modal-priority" aria-hidden="true">
+        <div class="modal-overlay"></div>
+        <div class="modal-panel tos-panel" role="dialog" aria-modal="true" aria-label="Terms and conditions">
+          <div class="text-lg font-semibold tracking-tight">Terms and Conditions</div>
+          <div id="tos-mode-note" class="mt-2 text-sm text-amber-300">You must agree to continue using this demo.</div>
+          <div class="mt-4 text-sm text-neutral-300 leading-relaxed">
+            This is a public demo of a product and is provided for evaluation purposes only.
+          </div>
+          <ul class="tos-list mt-4">
+            <li>Due to OCR limitations and provider constraints, public OCR processing is rate-limited to the first 2 pages per PDF.</li>
+            <li>Do not use the public-facing version for company-sensitive documents or personally identifying information.</li>
+            <li>As the user, you are responsible for any content you upload and the consequences of its use.</li>
+            <li>By using this demo, you agree to comply with all applicable laws and regulations regarding data privacy and security.</li>
+            <li>The public OCR processing uses Azure Document Intelligence services, which encrypts and then <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/responsible-ai/document-intelligence/data-privacy-security?view=foundry-classic">holds the information in transit for 24 hours</a>. I cannot control this process. I will not ever personally check or use your data, and after you exit the tab, the <a href="https://learn.microsoft.com/en-us/rest/api/aiservices/document-models/delete-analyze-result?view=rest-aiservices-v4.0%20(2024-11-30)&preserve-view=true&tabs=HTTP">delete analyze result API</a> will be triggered to remove your data on my end.</li>
+          </ul>
+          <div class="mt-5 text-xs text-neutral-500">By clicking Agree, you confirm you understand and accept these terms.</div>
+          <div class="mt-6 flex items-center justify-end gap-3">
+            <button id="btn-tos-agree" class="btn-primary text-sm" type="button">I Agree to the Terms</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Toasts -->
       <div id="toasts" class="toasts" aria-live="polite" aria-relevant="additions"></div>
 
@@ -493,4 +516,3 @@
     </div>
   </body>
 </html>
-

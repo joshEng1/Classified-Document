@@ -25,6 +25,7 @@ import { moderateText } from './services/moderation/guardian.js';
 import { summarizeChunkWithGemini, moderateTextWithGemini, detectPIIWithGemini } from './services/online/geminiAnalysis.js';
 import { redactPdf, getPdfSignals, renderPdfPages } from './services/extractor/doclingAdapter.js';
 import { loadRedactionRules, addRedactionRule, removeRedactionRule } from './services/redaction/redactionRules.js';
+import { deleteAnalyzeResultWithAzureDocumentIntelligence } from './services/azure/documentIntelligenceClient.js';
 import { safeErrorDetail } from './util/security.js';
 
 // Resolve current file/dir for ESM
@@ -99,6 +100,9 @@ app.use((req, res, next) => {
 
 const uploadRetentionMinutes = envNum(process.env.UPLOAD_RETENTION_MINUTES, 120, 5, 7 * 24 * 60);
 const uploadCleanupIntervalMinutes = envNum(process.env.UPLOAD_CLEANUP_INTERVAL_MINUTES, 15, 1, 24 * 60);
+const analyzeResultRefTtlMs = envNum(process.env.AZURE_ANALYZE_RESULT_REF_TTL_MS, 6 * 60 * 60 * 1000, 60_000, 7 * 24 * 60 * 60 * 1000);
+const analyzeResultRefMax = envNum(process.env.AZURE_ANALYZE_RESULT_REF_MAX, 2000, 100, 20_000);
+const analyzeResultRefs = new Map();
 
 function pruneOldFiles(dirPath, maxAgeMs) {
   const now = Date.now();
@@ -139,10 +143,48 @@ function cleanupSensitiveArtifacts() {
   maybeDebug(`[cleanup] checked=${checkedTotal} removed=${removedTotal} max_age_min=${uploadRetentionMinutes}`);
 }
 
+function pruneAnalyzeResultRefs() {
+  const now = Date.now();
+  for (const [ref, item] of analyzeResultRefs.entries()) {
+    const createdAt = Number(item?.createdAt || 0) || 0;
+    if (!createdAt || (now - createdAt) > analyzeResultRefTtlMs) analyzeResultRefs.delete(ref);
+  }
+  if (analyzeResultRefs.size <= analyzeResultRefMax) return;
+  const entries = Array.from(analyzeResultRefs.entries())
+    .sort((a, b) => (Number(a?.[1]?.createdAt || 0) || 0) - (Number(b?.[1]?.createdAt || 0) || 0));
+  const removeCount = Math.max(0, entries.length - analyzeResultRefMax);
+  for (let i = 0; i < removeCount; i++) {
+    const ref = String(entries[i]?.[0] || '').trim();
+    if (ref) analyzeResultRefs.delete(ref);
+  }
+}
+
+function registerAnalyzeResultRefFromExtraction(extraction) {
+  const op = String(extraction?.raw?.operation_location_full || '').trim();
+  if (!op) return null;
+  const ref = `ar_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+  analyzeResultRefs.set(ref, { createdAt: Date.now(), targets: [op] });
+  pruneAnalyzeResultRefs();
+  return ref;
+}
+
+function consumeAnalyzeResultTargets(ref) {
+  const key = String(ref || '').trim();
+  if (!key) return [];
+  const item = analyzeResultRefs.get(key);
+  if (!item) return [];
+  analyzeResultRefs.delete(key);
+  return Array.isArray(item?.targets) ? item.targets.filter(Boolean) : [];
+}
+
 cleanupSensitiveArtifacts();
 {
   const intervalMs = uploadCleanupIntervalMinutes * 60 * 1000;
   const timer = setInterval(cleanupSensitiveArtifacts, intervalMs);
+  timer.unref?.();
+}
+{
+  const timer = setInterval(pruneAnalyzeResultRefs, 5 * 60 * 1000);
   timer.unref?.();
 }
 
@@ -621,6 +663,7 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
       disableVision: noImages,
       onlineVisionOnly: isOnlineMode(modelMode),
     });
+    const analyze_cleanup_ref = registerAnalyzeResultRefFromExtraction(extraction);
 
     // 2) Guards + PII and Safety + redaction for routed/verifier use
     let pii = detectPII(extraction.text || '', extraction.meta);
@@ -738,6 +781,7 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
       meta: extraction.meta,
       multimodal: extraction.multimodal || undefined,
       redacted_pdf,
+      analyze_cleanup_ref,
       engine_info: getEngineModelInfo(modelMode),
       guards,
       safety,
@@ -808,6 +852,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       disableVision: noImages,
       onlineVisionOnly: isOnlineMode(modelMode),
     });
+    const analyze_cleanup_ref = registerAnalyzeResultRefFromExtraction(extraction);
     send('extract', { meta: extraction.meta, status: extraction.status });
 
     // Pre-checks
@@ -990,6 +1035,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       meta: extraction.meta,
       multimodal: extraction.multimodal || undefined,
       redacted_pdf,
+      analyze_cleanup_ref,
       pii,
       safety,
       guardian: guardianDoc,
@@ -1230,6 +1276,50 @@ app.delete('/api/redaction-rules/:id', (req, res) => {
     const msg = safeErrorDetail(e);
     const code = msg === 'not_found' ? 404 : 400;
     res.status(code).json({ ok: false, error: msg });
+  }
+});
+
+// Consume and delete Azure Document Intelligence analyze results (best effort).
+// Frontend calls this during tab-exit cleanup via sendBeacon/keepalive.
+app.post('/api/delete-analyze-result', async (req, res) => {
+  try {
+    const rawRefs = Array.isArray(req.body?.refs)
+      ? req.body.refs
+      : (req.body?.ref ? [req.body.ref] : []);
+    const refs = Array.from(new Set(
+      rawRefs
+        .map((v) => String(v || '').trim())
+        .filter((v) => /^ar_[A-Za-z0-9_]+$/.test(v))
+    )).slice(0, 30);
+    if (!refs.length) return res.status(400).json({ ok: false, error: 'missing_refs' });
+
+    let deleted = 0;
+    let refsMissing = 0;
+    const errors = [];
+    for (const ref of refs) {
+      const targets = consumeAnalyzeResultTargets(ref);
+      if (!targets.length) {
+        refsMissing++;
+        continue;
+      }
+      const uniqueTargets = Array.from(new Set(targets.map((v) => String(v || '').trim()).filter(Boolean))).slice(0, 10);
+      for (const target of uniqueTargets) {
+        const out = await deleteAnalyzeResultWithAzureDocumentIntelligence({ operationLocation: target });
+        if (out?.ok) deleted++;
+        else errors.push(String(out?.error || 'azure_di_delete_failed'));
+      }
+    }
+
+    return res.json({
+      ok: errors.length === 0,
+      deleted,
+      refs_consumed: refs.length,
+      refs_missing: refsMissing,
+      errors: errors.slice(0, 10),
+    });
+  } catch (e) {
+    logServerError('delete-analyze-result', e);
+    return res.status(500).json({ ok: false, error: 'delete_analyze_result_failed', detail: safeErrorDetail(e) });
   }
 });
 

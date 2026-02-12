@@ -78,6 +78,8 @@ export async function extractTextWithAzureDocumentIntelligence({ filePath }) {
         parsed.raw = {
           ...(parsed.raw || {}),
           operation_location: summarizeOperationLocation(operationLocation),
+          operation_location_full: operationLocation,
+          analyze_result_id: extractAnalyzeResultId(operationLocation),
           status: state,
         };
         return parsed;
@@ -88,6 +90,29 @@ export async function extractTextWithAzureDocumentIntelligence({ filePath }) {
     } catch (e) {
       return { error: `azure_di_poll_failed:${safeErrorDetail(e)}` };
     }
+  }
+}
+
+export async function deleteAnalyzeResultWithAzureDocumentIntelligence({ operationLocation }) {
+  const endpoint = normalizeEndpoint(process.env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT);
+  const apiKey = String(process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY || '').trim();
+  const apiVersion = String(process.env.AZURE_DOCUMENT_INTELLIGENCE_API_VERSION || DEFAULT_API_VERSION).trim() || DEFAULT_API_VERSION;
+  const timeoutMs = Math.max(5000, Number(process.env.AZURE_DOCUMENT_INTELLIGENCE_TIMEOUT_MS || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+  if (!endpoint) return { ok: false, error: 'azure_di_missing_endpoint' };
+  if (!apiKey) return { ok: false, error: 'azure_di_missing_key' };
+
+  const target = normalizeDeleteUrl({ endpoint, operationLocation, apiVersion });
+  if (!target) return { ok: false, error: 'azure_di_invalid_operation_location' };
+
+  try {
+    const resp = await axios.delete(target, {
+      timeout: Math.min(30000, timeoutMs),
+      headers: { 'Ocp-Apim-Subscription-Key': apiKey },
+      validateStatus: (s) => (s >= 200 && s < 300) || s === 404,
+    });
+    return { ok: true, status: Number(resp?.status || 0) || 0 };
+  } catch (e) {
+    return { ok: false, error: `azure_di_delete_failed:${safeErrorDetail(e)}` };
   }
 }
 
@@ -185,6 +210,37 @@ function summarizeOperationLocation(value) {
     const seg = u.pathname.split('/').filter(Boolean);
     const last = seg[seg.length - 1] || '';
     return `${u.origin}/.../${last}`;
+  } catch {
+    return '';
+  }
+}
+
+function extractAnalyzeResultId(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  try {
+    const u = new URL(s);
+    const seg = u.pathname.split('/').filter(Boolean);
+    const idx = seg.findIndex((part) => part.toLowerCase() === 'analyzeresults');
+    if (idx < 0 || !seg[idx + 1]) return '';
+    return String(seg[idx + 1]).trim();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeDeleteUrl({ endpoint, operationLocation, apiVersion }) {
+  const op = String(operationLocation || '').trim();
+  if (!op) return '';
+  try {
+    const endpointUrl = new URL(endpoint);
+    const target = new URL(op);
+    if (target.origin !== endpointUrl.origin) return '';
+    const path = target.pathname.toLowerCase();
+    if (!path.includes('/documentintelligence/documentmodels/')) return '';
+    if (!path.includes('/analyzeresults/')) return '';
+    if (!target.searchParams.has('api-version')) target.searchParams.set('api-version', apiVersion);
+    return target.toString();
   } catch {
     return '';
   }
