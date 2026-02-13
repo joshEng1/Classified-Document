@@ -127,6 +127,28 @@ OCR routing rule:
 
 Developer UI note: in website Developer Mode, `Model Mode` supports `Online API` and `Local / Offline` (offline is treated the same as local).
 
+## Deploy Backend on Render (Recommended)
+
+Use this when your frontend is hosted separately (for example on Vercel or your portfolio host).
+
+1. In Render, create a new **Web Service** from this repo.
+2. Render should auto-detect `render.yaml` in repo root and prefill settings.
+3. Set required secrets in Render:
+   - `GEMINI_API_KEY`
+   - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+   - `AZURE_DOCUMENT_INTELLIGENCE_KEY`
+   - `CORS_ORIGINS` (set to your frontend origin(s), comma-separated)
+4. Deploy and confirm health:
+   - `GET https://<your-render-service>.onrender.com/health`
+5. Point frontend API base to Render:
+   - Query param: `?api=https://<your-render-service>.onrender.com`
+   - or set a fixed API base in your frontend build.
+
+Notes:
+- Keep `CORS_ALLOW_ALL=false` in production.
+- Keep secrets only in Render environment variables (never in frontend code).
+- This backend is stateless; uploaded/redacted artifacts are temporary.
+
 ## Security Hardening
 
 - API keys remain server-side only (`server/.env`); the browser never receives provider secrets.
