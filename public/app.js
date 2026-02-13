@@ -1,4 +1,5 @@
 const $ = (sel) => document.querySelector(sel);
+const REVIEW_PAGE_SIZE = 10;
 
 function nowTime() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -44,6 +45,16 @@ function joinUrl(base, path) {
 function loadUiMode() {
   const saved = String(localStorage.getItem('uiMode') || '').trim().toLowerCase();
   return saved === 'dev' ? 'dev' : 'business';
+}
+
+function normalizeModelMode(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'local' || v === 'offline') return 'local';
+  return 'online';
+}
+
+function loadModelMode() {
+  return normalizeModelMode(localStorage.getItem('modelMode') || 'online');
 }
 
 function setText(el, text) {
@@ -165,20 +176,32 @@ const state = {
   apiBase: resolveApiBase(),
   ui: {
     mode: loadUiMode(), // 'business' | 'dev'
+    modelMode: loadModelMode(), // 'online' | 'local'
     logBuffer: [],
     lastHealth: null,
     lastHealthError: null,
+    lastProviderStatus: null,
   },
+  terms: {
+    accepted: false,
+    onlineAccepted: false,
+    requiresOnline: false,
+    onAccept: null,
+  },
+  cleanupRefs: new Set(),
   file: null,
   previewUrl: null,
   previewOpen: false,
   manual: {
     sessionId: null,
     originalName: null,
+    baseSessionId: null,
+    baseOriginalName: null,
     pages: 0,
     pageSignals: [],
     currentPage: 1,
     boxes: [],
+    aiBoxes: [],
     drawing: null,
     dpi: 180,
   },
@@ -196,6 +219,9 @@ const state = {
     policy: null,
     final: null,
     redactedPdf: null,
+    redactionReview: null,
+    reviewFilter: 'all',
+    reviewPage: 0,
   },
 };
 
@@ -229,7 +255,12 @@ function applyUiMode() {
     renderActivityLogFromBuffer();
     const healthPre = $('#health-json');
     if (healthPre) {
-      if (state.ui.lastHealth) setText(healthPre, JSON.stringify(state.ui.lastHealth, null, 2));
+      if (state.ui.lastHealth) {
+        const payload = state.ui.lastProviderStatus
+          ? { ...state.ui.lastHealth, provider_status: state.ui.lastProviderStatus }
+          : state.ui.lastHealth;
+        setText(healthPre, JSON.stringify(payload, null, 2));
+      }
       else if (state.ui.lastHealthError) setText(healthPre, String(state.ui.lastHealthError));
       else setText(healthPre, 'â€”');
     }
@@ -238,6 +269,16 @@ function applyUiMode() {
   // Redaction overlays/list differ in dev mode (coords + labels).
   renderManualBoxList();
   renderManualBoxesOnPage();
+
+  const modeSelect = $('#model-mode');
+  if (modeSelect) modeSelect.value = state.ui.modelMode;
+  setText($('#model-mode-value'), state.ui.modelMode === 'local' ? 'local/offline' : 'online');
+  setText(
+    $('#model-mode-hint'),
+    state.ui.modelMode === 'local'
+      ? 'Uses local/offline model path (no hosted verifier calls).'
+      : 'Uses hosted API verification.'
+  );
 
   // Update status pill formatting for the selected mode.
   void checkHealth();
@@ -254,7 +295,14 @@ function toggleUiMode() {
   toast('success', 'Mode changed', isDevMode() ? 'Developer mode enabled' : 'Business mode enabled');
 }
 
+function setModelMode(mode) {
+  state.ui.modelMode = normalizeModelMode(mode);
+  localStorage.setItem('modelMode', state.ui.modelMode);
+  applyUiMode();
+}
+
 function resetRunUi() {
+  state.manual.aiBoxes = [];
   state.run = {
     startedAt: Date.now(),
     phase: 'idle',
@@ -269,6 +317,9 @@ function resetRunUi() {
     policy: null,
     final: null,
     redactedPdf: null,
+    redactionReview: null,
+    reviewFilter: 'all',
+    reviewPage: 0,
   };
 
   setStepState('step-extract', 'active', 'Waiting…');
@@ -304,10 +355,15 @@ function resetRunUi() {
   setText($('#kpi-guardian'), '—');
   setText($('#kpi-guardian-sub'), '—');
   $('#evidence-list')?.replaceChildren();
+  $('#redact-text-list')?.replaceChildren();
+  setText($('#evidence-counts'), 'Approved: 0 • Rejected: 0 • Total: 0');
+  setText($('#evidence-page'), 'Page 1 / 1');
+  setText($('#redact-review-summary'), 'Approved: 0 • Rejected: 0 • Total: 0');
   renderChips($('#safety-concerns'), []);
   renderChips($('#guardian-flags'), []);
   setText($('#audit-json'), '');
   hide($('#btn-download-redacted'));
+  updateEvidenceControls();
 }
 
 function updateMiniStats() {
@@ -375,7 +431,10 @@ async function checkHealth() {
     const version = String(j?.version || '').trim() || '-';
     setStatusPill('ok', isDevMode() ? `Online (v${version})` : 'Online');
     const pre = $('#health-json');
-    if (pre && isDevMode()) setText(pre, JSON.stringify(j, null, 2));
+    if (pre && isDevMode()) {
+      const payload = state.ui.lastProviderStatus ? { ...j, provider_status: state.ui.lastProviderStatus } : j;
+      setText(pre, JSON.stringify(payload, null, 2));
+    }
     return true;
   } catch (e) {
     setStatusPill('down', 'Offline');
@@ -387,6 +446,34 @@ async function checkHealth() {
   }
 }
 
+async function checkProviderStatus(silent = true) {
+  try {
+    const mode = normalizeModelMode(state.ui.modelMode);
+    const url = joinUrl(state.apiBase, `/api/provider-status?model_mode=${encodeURIComponent(mode)}`);
+    const j = await fetchJson(url, { cache: 'no-store' });
+    state.ui.lastProviderStatus = j || null;
+
+    const pre = $('#health-json');
+    if (pre && isDevMode() && state.ui.lastHealth) {
+      setText(pre, JSON.stringify({ ...state.ui.lastHealth, provider_status: state.ui.lastProviderStatus }, null, 2));
+    }
+
+    if (!silent) {
+      const provider = String(j?.provider || 'online');
+      if (j?.connected) toast('success', 'Provider reachable', `${provider} is connected`);
+      else toast('error', 'Provider not connected', String(j?.detail || 'connection_failed'));
+      logLine(`provider_status: mode=${j?.mode || mode} provider=${provider} connected=${j?.connected ? 'yes' : 'no'} detail=${j?.detail || '-'}`);
+    }
+    return Boolean(j?.connected);
+  } catch (e) {
+    if (!silent) {
+      toast('error', 'Provider check failed', String(e?.message || e));
+      logLine(`provider_status_failed: ${String(e?.message || e)}`);
+    }
+    return false;
+  }
+}
+
 function isPdfFile(file) {
   const name = String(file?.name || '').toLowerCase();
   const type = String(file?.type || '').toLowerCase();
@@ -394,17 +481,44 @@ function isPdfFile(file) {
 }
 
 async function deletePdfSession() {
-  const id = String(state.manual.sessionId || '').trim();
-  if (!id) return;
+  const displayId = String(state.manual.sessionId || '').trim();
+  const baseId = String(state.manual.baseSessionId || '').trim();
+  const ids = Array.from(new Set([displayId, baseId].filter(Boolean)));
+
   state.manual.sessionId = null;
+  state.manual.originalName = null;
+  state.manual.baseSessionId = null;
+  state.manual.baseOriginalName = null;
   state.manual.pages = 0;
   state.manual.pageSignals = [];
   state.manual.boxes = [];
+  for (const id of ids) {
+    try {
+      const url = joinUrl(state.apiBase, `/api/pdf/session/${encodeURIComponent(id)}`);
+      await fetchJson(url, { method: 'DELETE' });
+    } catch {
+      // Best-effort; session cleanup is optional.
+    }
+  }
+}
+
+async function clearManualSessionSlot(slot) {
+  const isBase = String(slot || '').toLowerCase() === 'base';
+  const idField = isBase ? 'baseSessionId' : 'sessionId';
+  const keyField = isBase ? 'baseOriginalName' : 'originalName';
+  const otherIdField = isBase ? 'sessionId' : 'baseSessionId';
+  const id = String(state.manual[idField] || '').trim();
+  const otherId = String(state.manual[otherIdField] || '').trim();
+
+  state.manual[idField] = null;
+  state.manual[keyField] = null;
+  if (!id || id === otherId) return;
+
   try {
     const url = joinUrl(state.apiBase, `/api/pdf/session/${encodeURIComponent(id)}`);
     await fetchJson(url, { method: 'DELETE' });
   } catch {
-    // Best-effort; session cleanup is optional.
+    // Best-effort cleanup.
   }
 }
 
@@ -455,6 +569,83 @@ function renderPreviewUi() {
   }
 }
 
+function hasTermsConsentForMode(mode) {
+  const normalized = normalizeModelMode(mode);
+  if (!state.terms.accepted) return false;
+  if (normalized === 'online' && !state.terms.onlineAccepted) return false;
+  return true;
+}
+
+function openTermsModal({ online = false } = {}) {
+  const modal = $('#tos-modal');
+  if (!modal) return;
+  state.terms.requiresOnline = Boolean(online);
+  const note = $('#tos-mode-note');
+  if (note) {
+    note.textContent = online
+      ? 'Online mode selected: this run uses public-facing hosted APIs.'
+      : 'You must agree to continue using this demo.';
+  }
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-lock');
+}
+
+function closeTermsModal() {
+  const modal = $('#tos-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-lock');
+}
+
+function requireTerms({ online = false, onAccept = null } = {}) {
+  state.terms.onAccept = typeof onAccept === 'function' ? onAccept : null;
+  openTermsModal({ online });
+}
+
+function acceptTerms() {
+  state.terms.accepted = true;
+  if (state.terms.requiresOnline) state.terms.onlineAccepted = true;
+  const cb = state.terms.onAccept;
+  state.terms.onAccept = null;
+  closeTermsModal();
+  if (typeof cb === 'function') cb();
+}
+
+function trackAnalyzeCleanupRef(ref) {
+  const id = String(ref || '').trim();
+  if (!/^ar_[A-Za-z0-9_]+$/.test(id)) return;
+  if (!(state.cleanupRefs instanceof Set)) state.cleanupRefs = new Set();
+  state.cleanupRefs.add(id);
+}
+
+function flushAnalyzeResultCleanup() {
+  const refs = state.cleanupRefs instanceof Set ? Array.from(state.cleanupRefs) : [];
+  if (!refs.length) return;
+  const url = joinUrl(state.apiBase, '/api/delete-analyze-result');
+  const payload = JSON.stringify({ refs });
+  let sent = false;
+  try {
+    if (navigator?.sendBeacon) {
+      const blob = new Blob([payload], { type: 'application/json' });
+      sent = navigator.sendBeacon(url, blob);
+    }
+  } catch { }
+  if (!sent) {
+    try {
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true,
+        cache: 'no-store',
+      }).catch(() => { });
+    } catch { }
+  }
+  if (state.cleanupRefs instanceof Set) state.cleanupRefs.clear();
+}
+
 function openRedactModal() {
   const modal = $('#redact-modal');
   if (!modal) return;
@@ -486,17 +677,238 @@ function setManualPages(total) {
   setText($('#redact-pages'), n ? String(n) : '—');
 }
 
+function normalizeRedactionCandidate(raw) {
+  const kind = String(raw?.kind || '').trim().toLowerCase();
+  if (kind !== 'text' && kind !== 'box') return null;
+  const page = Number(raw?.page || 0) || 0;
+  if (!page) return null;
+  const id = String(raw?.id || '').trim();
+  if (!id) return null;
+  const label = String(raw?.label || raw?.source || kind).trim() || kind;
+  const source = String(raw?.source || 'policy').trim().toLowerCase() || 'policy';
+
+  if (kind === 'box') {
+    const bbox = Array.isArray(raw?.bbox) && raw.bbox.length === 4 ? raw.bbox.map(Number) : null;
+    if (!bbox || bbox.some((v) => !Number.isFinite(v))) return null;
+    return { id, source, kind, page, label, bbox, approved_default: raw?.approved_default !== false };
+  }
+
+  const text = String(raw?.text || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return { id, source, kind, page, label, text, approved_default: raw?.approved_default !== false };
+}
+
+function getDecisionMap() {
+  const decisions = state.run?.redactionReview?.decisionsMap;
+  if (decisions && typeof decisions === 'object') return decisions;
+  return {};
+}
+
+function isCandidateApproved(candidate) {
+  const decisions = getDecisionMap();
+  const stored = decisions[String(candidate?.id || '')];
+  if (stored === 'reject') return false;
+  if (stored === 'approve') return true;
+  return candidate?.approved_default !== false;
+}
+
+function getApprovedReviewCandidates() {
+  const review = state.run?.redactionReview;
+  const list = Array.isArray(review?.candidates) ? review.candidates : [];
+  return list.filter((c) => isCandidateApproved(c));
+}
+
+function syncManualAiBoxesFromReview() {
+  state.manual.aiBoxes = getApprovedReviewCandidates()
+    .filter((c) => String(c?.kind || '') === 'box')
+    .map((c) => ({
+      candidate_id: c.id,
+      source: c.source,
+      page: Number(c.page || 0) || 0,
+      bbox: Array.isArray(c.bbox) ? c.bbox.map(Number) : [],
+      label: String(c.label || c.source || 'review'),
+    }))
+    .filter((b) => b.page && Array.isArray(b.bbox) && b.bbox.length === 4 && b.bbox.every((v) => Number.isFinite(v)));
+}
+
+function setCandidateDecision(candidateId, approved) {
+  const review = state.run?.redactionReview;
+  if (!review || !candidateId) return;
+  if (!review.decisionsMap || typeof review.decisionsMap !== 'object') review.decisionsMap = {};
+  review.decisionsMap[String(candidateId)] = approved ? 'approve' : 'reject';
+  syncManualAiBoxesFromReview();
+  renderEvidence();
+  renderManualBoxList();
+  renderManualBoxesOnPage();
+  renderManualTextReviewList();
+  hide($('#btn-download-manual'));
+}
+
+function applyRedactionReview(reviewPayload) {
+  const candidates = (Array.isArray(reviewPayload?.candidates) ? reviewPayload.candidates : [])
+    .map((c) => normalizeRedactionCandidate(c))
+    .filter(Boolean);
+  const decisionsMap = {};
+  for (const c of candidates) decisionsMap[c.id] = c.approved_default === false ? 'reject' : 'approve';
+
+  state.run.redactionReview = {
+    summary: reviewPayload?.summary || { total: candidates.length, approved_default: candidates.length, by_kind: {}, by_source: {} },
+    candidates,
+    decisionsMap,
+  };
+  syncManualAiBoxesFromReview();
+}
+
+function resetReviewDecisionsToDefault() {
+  const review = state.run?.redactionReview;
+  const candidates = Array.isArray(review?.candidates) ? review.candidates : [];
+  if (!review || !candidates.length) return;
+  const defaults = {};
+  for (const c of candidates) defaults[String(c.id)] = c?.approved_default === false ? 'reject' : 'approve';
+  review.decisionsMap = defaults;
+  syncManualAiBoxesFromReview();
+  renderEvidence();
+  renderManualBoxList();
+  renderManualBoxesOnPage();
+  renderManualTextReviewList();
+  hide($('#btn-download-manual'));
+}
+
+function getReviewSummaryCounts() {
+  const review = state.run?.redactionReview;
+  const list = Array.isArray(review?.candidates) ? review.candidates : [];
+  let approved = 0;
+  let rejected = 0;
+  for (const c of list) {
+    if (isCandidateApproved(c)) approved++;
+    else rejected++;
+  }
+  return { total: list.length, approved, rejected };
+}
+
+function getFilteredReviewCandidates() {
+  const review = state.run?.redactionReview;
+  const list = Array.isArray(review?.candidates) ? review.candidates : [];
+  const filter = String(state.run?.reviewFilter || 'all').toLowerCase();
+  if (filter === 'approved') return list.filter((c) => isCandidateApproved(c));
+  if (filter === 'rejected') return list.filter((c) => !isCandidateApproved(c));
+  return list;
+}
+
+function setReviewFilter(filter) {
+  const next = String(filter || 'all').toLowerCase();
+  state.run.reviewFilter = (next === 'approved' || next === 'rejected') ? next : 'all';
+  state.run.reviewPage = 0;
+  renderEvidence();
+}
+
+function shiftReviewPage(delta) {
+  const filtered = getFilteredReviewCandidates();
+  const pages = Math.max(1, Math.ceil(filtered.length / REVIEW_PAGE_SIZE));
+  state.run.reviewPage = clamp((Number(state.run.reviewPage || 0) || 0) + Number(delta || 0), 0, pages - 1);
+  renderEvidence();
+}
+
+function updateEvidenceControls() {
+  const counts = getReviewSummaryCounts();
+  const countsEl = $('#evidence-counts');
+  if (countsEl) countsEl.textContent = `Approved: ${counts.approved} • Rejected: ${counts.rejected} • Total: ${counts.total}`;
+
+  const summaryEl = $('#redact-review-summary');
+  if (summaryEl) summaryEl.textContent = `Approved: ${counts.approved} • Rejected: ${counts.rejected} • Total: ${counts.total}`;
+
+  const filtered = getFilteredReviewCandidates();
+  const pageCount = Math.max(1, Math.ceil(filtered.length / REVIEW_PAGE_SIZE));
+  state.run.reviewPage = clamp(Number(state.run.reviewPage || 0) || 0, 0, pageCount - 1);
+  const pageLabel = $('#evidence-page');
+  if (pageLabel) pageLabel.textContent = `Page ${state.run.reviewPage + 1} / ${pageCount}`;
+
+  const prev = $('#evidence-prev');
+  const next = $('#evidence-next');
+  if (prev) prev.disabled = state.run.reviewPage <= 0;
+  if (next) next.disabled = state.run.reviewPage >= pageCount - 1;
+
+  const f = String(state.run.reviewFilter || 'all');
+  $('#evidence-filter-all')?.classList.toggle('active', f === 'all');
+  $('#evidence-filter-approved')?.classList.toggle('active', f === 'approved');
+  $('#evidence-filter-rejected')?.classList.toggle('active', f === 'rejected');
+}
+
+function renderManualTextReviewList() {
+  const root = $('#redact-text-list');
+  if (!root) return;
+  root.innerHTML = '';
+
+  const review = state.run?.redactionReview;
+  const list = Array.isArray(review?.candidates) ? review.candidates.filter((c) => c.kind === 'text') : [];
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'muted text-sm';
+    empty.textContent = 'No text redaction candidates from analysis.';
+    root.appendChild(empty);
+    return;
+  }
+
+  for (const c of list.slice(0, 80)) {
+    const approved = isCandidateApproved(c);
+    const row = document.createElement('div');
+    row.className = 'evidence-item';
+    row.dataset.approved = approved ? 'true' : 'false';
+
+    const top = document.createElement('div');
+    top.className = 'evidence-top';
+    const left = document.createElement('div');
+    left.className = 'flex items-center gap-2';
+    const t1 = document.createElement('span');
+    t1.className = 'tag';
+    t1.textContent = String(c.label || c.source || 'text');
+    const t2 = document.createElement('span');
+    t2.className = 'tag';
+    t2.textContent = `Page ${Number(c.page || 0) || 1}`;
+    left.appendChild(t1);
+    left.appendChild(t2);
+
+    const actions = document.createElement('div');
+    actions.className = 'decision-actions';
+    const approveBtn = document.createElement('button');
+    approveBtn.type = 'button';
+    approveBtn.className = `decision-btn ${approved ? 'active-approve' : ''}`;
+    approveBtn.textContent = 'Approve';
+    approveBtn.addEventListener('click', () => setCandidateDecision(c.id, true));
+    const rejectBtn = document.createElement('button');
+    rejectBtn.type = 'button';
+    rejectBtn.className = `decision-btn ${approved ? '' : 'active-reject'}`;
+    rejectBtn.textContent = 'Reject';
+    rejectBtn.addEventListener('click', () => setCandidateDecision(c.id, false));
+    actions.appendChild(approveBtn);
+    actions.appendChild(rejectBtn);
+
+    top.appendChild(left);
+    top.appendChild(actions);
+    row.appendChild(top);
+
+    const body = document.createElement('div');
+    body.className = 'mt-3 text-sm text-neutral-300';
+    body.textContent = String(c.text || '').slice(0, 280) || '—';
+    row.appendChild(body);
+    root.appendChild(row);
+  }
+}
+
 function renderManualBoxList() {
   const root = $('#redact-box-list');
   if (!root) return;
   root.innerHTML = '';
 
-  const boxes = Array.isArray(state.manual.boxes) ? state.manual.boxes : [];
+  const manualBoxes = Array.isArray(state.manual.boxes) ? state.manual.boxes : [];
+  const aiBoxes = Array.isArray(state.manual.aiBoxes) ? state.manual.aiBoxes : [];
+  const boxes = [...aiBoxes.map((b) => ({ ...b, _from: 'ai' })), ...manualBoxes.map((b) => ({ ...b, _from: 'manual' }))];
   if (!boxes.length) {
     const empty = document.createElement('div');
     empty.className = 'muted text-sm';
-    empty.textContent = 'No boxes yet. Drag on the page to add one.';
+    empty.textContent = 'No approved boxes yet. Drag on the page to add one manually.';
     root.appendChild(empty);
+    renderManualTextReviewList();
     return;
   }
 
@@ -511,29 +923,41 @@ function renderManualBoxList() {
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = `Page ${Number(b?.page || 0) || 1}`;
+    const src = document.createElement('span');
+    src.className = 'tag';
+    src.textContent = b._from === 'ai' ? `AI:${String(b?.source || 'review')}` : 'manual';
     const txt = document.createElement('span');
     txt.className = 'text-sm muted';
     const bb = Array.isArray(b?.bbox) ? b.bbox : [];
     txt.textContent = bb.length === 4 ? bb.map((v) => Number(v).toFixed(1)).join(', ') : '—';
     if (!isDevMode()) txt.textContent = `Box ${idx + 1}`;
     left.appendChild(tag);
+    left.appendChild(src);
     left.appendChild(txt);
 
-    const rm = document.createElement('button');
-    rm.className = 'btn-tertiary';
-    rm.type = 'button';
-    rm.textContent = 'Remove';
-    rm.addEventListener('click', () => {
-      state.manual.boxes = boxes.filter((_x, i) => i !== idx);
-      renderManualBoxList();
-      renderManualBoxesOnPage();
-    });
-
     top.appendChild(left);
-    top.appendChild(rm);
+    if (b._from === 'manual') {
+      const manualIndex = idx - aiBoxes.length;
+      const rm = document.createElement('button');
+      rm.className = 'btn-tertiary';
+      rm.type = 'button';
+      rm.textContent = 'Remove';
+      rm.addEventListener('click', () => {
+        state.manual.boxes = manualBoxes.filter((_x, i) => i !== manualIndex);
+        renderManualBoxList();
+        renderManualBoxesOnPage();
+      });
+      top.appendChild(rm);
+    } else {
+      const badge = document.createElement('span');
+      badge.className = 'tag';
+      badge.textContent = 'approved';
+      top.appendChild(badge);
+    }
     row.appendChild(top);
     root.appendChild(row);
   }
+  renderManualTextReviewList();
 }
 
 function renderManualBoxesOnPage() {
@@ -547,7 +971,12 @@ function renderManualBoxesOnPage() {
   const pageH = Number(sig?.height || 0) || 0;
   if (!pageW || !pageH) return;
 
-  const boxes = (Array.isArray(state.manual.boxes) ? state.manual.boxes : []).filter((b) => Number(b?.page || 0) === state.manual.currentPage);
+  const manualBoxes = Array.isArray(state.manual.boxes) ? state.manual.boxes : [];
+  const aiBoxes = Array.isArray(state.manual.aiBoxes) ? state.manual.aiBoxes : [];
+  const boxes = [
+    ...aiBoxes.map((b) => ({ ...b, _from: 'ai' })),
+    ...manualBoxes.map((b) => ({ ...b, _from: 'manual' })),
+  ].filter((b) => Number(b?.page || 0) === state.manual.currentPage);
   if (!boxes.length) return;
 
   // Use rendered element size for mapping, so overlays stay aligned on resize.
@@ -564,7 +993,7 @@ function renderManualBoxesOnPage() {
     const height = (Math.abs(y1 - y0) / pageH) * h;
 
     const div = document.createElement('div');
-    div.className = 'redact-box';
+    div.className = `redact-box ${b._from === 'ai' ? 'redact-box-ai' : 'redact-box-manual'}`;
     div.style.left = `${left}px`;
     div.style.top = `${top}px`;
     div.style.width = `${Math.max(2, width)}px`;
@@ -572,7 +1001,7 @@ function renderManualBoxesOnPage() {
     if (isDevMode()) {
       const badge = document.createElement('div');
       badge.className = 'redact-badge';
-      badge.textContent = String(idx + 1);
+      badge.textContent = b._from === 'ai' ? `AI ${idx + 1}` : String(idx + 1);
       div.appendChild(badge);
     }
     layer.appendChild(div);
@@ -586,11 +1015,62 @@ async function createPdfSession() {
   const key = `${state.file.name}:${state.file.size}`;
   if (state.manual.sessionId && state.manual.originalName === key) return state.manual.sessionId;
 
-  // Cleanup old session if any.
-  await deletePdfSession();
+  // Cleanup old display session if any.
+  await clearManualSessionSlot('display');
 
   const form = new FormData();
   form.append('file', state.file);
+  const url = joinUrl(state.apiBase, '/api/pdf/session');
+  const res = await fetchJson(url, { method: 'POST', body: form });
+  if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
+
+  state.manual.sessionId = String(res.id);
+  state.manual.originalName = key;
+  state.manual.pageSignals = Array.isArray(res?.page_signals) ? res.page_signals : [];
+  setManualPages(Number(res?.pages || 0) || 0);
+  return state.manual.sessionId;
+}
+
+async function createBasePdfSession() {
+  if (!state.file || !isPdfFile(state.file)) throw new Error('pdf_required');
+  const key = `${state.file.name}:${state.file.size}`;
+  if (state.manual.baseSessionId && state.manual.baseOriginalName === key) return state.manual.baseSessionId;
+
+  if (state.manual.sessionId && state.manual.originalName === key) {
+    state.manual.baseSessionId = state.manual.sessionId;
+    state.manual.baseOriginalName = key;
+    return state.manual.baseSessionId;
+  }
+
+  await clearManualSessionSlot('base');
+
+  const form = new FormData();
+  form.append('file', state.file);
+  const url = joinUrl(state.apiBase, '/api/pdf/session');
+  const res = await fetchJson(url, { method: 'POST', body: form });
+  if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
+
+  state.manual.baseSessionId = String(res.id);
+  state.manual.baseOriginalName = key;
+  return state.manual.baseSessionId;
+}
+
+async function createReviewDisplayPdfSession() {
+  const rel = String(state.run?.redactedPdf?.url || '').trim();
+  if (!rel) throw new Error('No generated redacted PDF available yet');
+  const key = `redacted:${rel}`;
+  if (state.manual.sessionId && state.manual.originalName === key) return state.manual.sessionId;
+
+  await clearManualSessionSlot('display');
+
+  const pdfUrl = joinUrl(state.apiBase, rel);
+  const pdfRes = await fetch(pdfUrl, { cache: 'no-store' });
+  if (!pdfRes.ok) throw new Error(`redacted_fetch_http_${pdfRes.status}`);
+  const pdfBlob = await pdfRes.blob();
+  if (!pdfBlob || !Number(pdfBlob.size || 0)) throw new Error('redacted_fetch_empty');
+
+  const form = new FormData();
+  form.append('file', pdfBlob, 'review-redacted.pdf');
   const url = joinUrl(state.apiBase, '/api/pdf/session');
   const res = await fetchJson(url, { method: 'POST', body: form });
   if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
@@ -713,26 +1193,55 @@ function finishManualDrawing() {
   state.manual.boxes.push({ page: state.manual.currentPage, bbox: [x0, y0, x1, y1], label: 'manual' });
   renderManualBoxList();
   renderManualBoxesOnPage();
+  hide($('#btn-download-manual'));
 }
 
 async function generateManualRedaction() {
-  const id = String(state.manual.sessionId || '').trim();
+  const id = String(state.manual.baseSessionId || state.manual.sessionId || '').trim();
   if (!id) return toast('error', 'No session', 'Open manual redaction after selecting a PDF');
+
+  const review = state.run?.redactionReview;
+  const hasReview = Boolean(review && Array.isArray(review?.candidates) && review.candidates.length);
+  const approved = hasReview ? getApprovedReviewCandidates() : [];
+  const approvedBoxes = approved
+    .filter((c) => c.kind === 'box')
+    .map((c) => ({ page: c.page, bbox: c.bbox, label: c.label || c.source || 'review', candidate_id: c.id }));
+  const approvedTexts = approved
+    .filter((c) => c.kind === 'text')
+    .map((c) => ({ page: c.page, text: c.text, label: c.label || c.source || 'review', candidate_id: c.id }));
+  const dedupeKey = (b) => `${Number(b?.page || 0)}|${Array.isArray(b?.bbox) ? b.bbox.map((v) => Number(v).toFixed(3)).join(',') : ''}|${String(b?.label || '').toLowerCase()}`;
+  const mergedBoxes = [];
+  const seenBox = new Set();
+  for (const b of [...approvedBoxes, ...(Array.isArray(state.manual.boxes) ? state.manual.boxes : [])]) {
+    const key = dedupeKey(b);
+    if (!key || seenBox.has(key)) continue;
+    seenBox.add(key);
+    mergedBoxes.push(b);
+  }
 
   const btn = $('#btn-generate-manual');
   btn && (btn.disabled = true);
   hide($('#btn-download-manual'));
   try {
     const url = joinUrl(state.apiBase, '/api/pdf/redact');
-    const res = await fetchJson(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const payload = hasReview
+      ? {
+        id,
+        boxes: mergedBoxes,
+        search_texts: approvedTexts,
+        detect_pii: false,
+        include_rules: false,
+      }
+      : {
         id,
         boxes: state.manual.boxes,
         detect_pii: true,
         include_rules: true,
-      }),
+      };
+    const res = await fetchJson(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
     if (!res?.ok || !res?.redacted_pdf?.url) throw new Error(res?.error || 'redact_failed');
 
@@ -742,7 +1251,9 @@ async function generateManualRedaction() {
       dl.download = '';
       show(dl);
     }
-    toast('success', 'Redacted PDF ready', 'Download manual redaction');
+    const appliedBoxes = Number(res?.applied?.boxes_applied || 0) || 0;
+    const appliedTexts = Number(res?.applied?.search_texts_applied || 0) || 0;
+    toast('success', 'Redacted PDF ready', hasReview ? `Applied ${appliedBoxes} boxes + ${appliedTexts} text redactions` : 'Download manual redaction');
   } catch (e) {
     toast('error', 'Manual redaction failed', String(e?.message || e));
   } finally {
@@ -875,22 +1386,29 @@ async function saveRule() {
   }
 }
 
-function renderEvidence(citations) {
+function renderEvidence() {
   const root = $('#evidence-list');
   if (!root) return;
   root.innerHTML = '';
-  const list = Array.isArray(citations) ? citations : [];
+  const list = getFilteredReviewCandidates();
+  updateEvidenceControls();
   if (!list.length) {
     const empty = document.createElement('div');
     empty.className = 'muted text-sm';
-    empty.textContent = 'No citations provided.';
+    empty.textContent = 'No redaction review candidates.';
     root.appendChild(empty);
     return;
   }
 
-  for (const c of list.slice(0, 12)) {
+  const page = Number(state.run.reviewPage || 0) || 0;
+  const start = page * REVIEW_PAGE_SIZE;
+  const view = list.slice(start, start + REVIEW_PAGE_SIZE);
+
+  for (const c of view) {
+    const approved = isCandidateApproved(c);
     const card = document.createElement('div');
     card.className = 'evidence-item';
+    card.dataset.approved = approved ? 'true' : 'false';
 
     const top = document.createElement('div');
     top.className = 'evidence-top';
@@ -899,42 +1417,44 @@ function renderEvidence(citations) {
     left.className = 'flex items-center gap-2';
     const tag = document.createElement('span');
     tag.className = 'tag';
-    tag.textContent = String(c?.type || 'evidence');
+    tag.textContent = String(c?.label || c?.type || c?.source || 'evidence');
     const page = document.createElement('span');
     page.className = 'tag';
     page.textContent = `Page ${Number(c?.page || 0) || 1}`;
+    const source = document.createElement('span');
+    source.className = 'tag';
+    source.textContent = String(c?.source || 'policy');
     left.appendChild(tag);
     left.appendChild(page);
+    left.appendChild(source);
 
-    const btn = document.createElement('button');
-    btn.className = 'btn-tertiary';
-    btn.type = 'button';
-    btn.textContent = 'Remember redaction';
-    btn.addEventListener('click', () => {
-      openRulesDrawer();
-      const textEl = $('#rule-text');
-      const labelEl = $('#rule-label');
-      if (textEl) textEl.value = String(c?.text || '').trim();
-      if (labelEl) {
-        const t = String(c?.type || '').toLowerCase();
-        const suggest = t.includes('ssn') ? 'ssn'
-          : t.includes('address') ? 'address'
-          : t.includes('phone') ? 'phone'
-          : t.includes('email') ? 'email'
-          : t.includes('name') ? 'name'
-          : 'custom';
-        labelEl.value = suggest;
-      }
-      void loadRules();
-    });
+    const actions = document.createElement('div');
+    actions.className = 'decision-actions';
+    const approveBtn = document.createElement('button');
+    approveBtn.className = `decision-btn ${approved ? 'active-approve' : ''}`;
+    approveBtn.type = 'button';
+    approveBtn.textContent = 'Approve';
+    approveBtn.addEventListener('click', () => setCandidateDecision(c.id, true));
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = `decision-btn ${approved ? '' : 'active-reject'}`;
+    rejectBtn.type = 'button';
+    rejectBtn.textContent = 'Reject';
+    rejectBtn.addEventListener('click', () => setCandidateDecision(c.id, false));
+    actions.appendChild(approveBtn);
+    actions.appendChild(rejectBtn);
 
     top.appendChild(left);
-    top.appendChild(btn);
+    top.appendChild(actions);
     card.appendChild(top);
 
     const body = document.createElement('div');
     body.className = 'mt-3 text-sm text-neutral-300';
-    body.textContent = String(c?.text || '').slice(0, 260) || '—';
+    if (String(c?.kind || '').toLowerCase() === 'box') {
+      const bb = Array.isArray(c?.bbox) ? c.bbox : [];
+      body.textContent = bb.length === 4 ? `Box: ${bb.map((v) => Number(v).toFixed(2)).join(', ')}` : 'Box candidate';
+    } else {
+      body.textContent = String(c?.text || '').slice(0, 260) || '—';
+    }
     card.appendChild(body);
     root.appendChild(card);
   }
@@ -947,6 +1467,26 @@ function renderFinalReport(data) {
   state.run.policy = data?.policy || state.run.policy;
   state.run.final = data?.final || state.run.final;
   state.run.redactedPdf = data?.redacted_pdf || null;
+  trackAnalyzeCleanupRef(data?.analyze_cleanup_ref);
+  if (data?.redaction_review) {
+    applyRedactionReview(data.redaction_review);
+  } else {
+    const fallback = (Array.isArray(data?.policy?.citations) ? data.policy.citations : []).map((c, i) => ({
+      id: `legacy_${i}_${Number(c?.page || 1)}`,
+      source: 'policy',
+      kind: 'text',
+      page: Number(c?.page || 0) || 1,
+      label: String(c?.type || 'policy'),
+      text: String(c?.text || '').trim(),
+      approved_default: true,
+    })).filter((c) => c.text);
+    state.run.redactionReview = {
+      summary: { total: fallback.length, approved_default: fallback.length, by_kind: { text: fallback.length }, by_source: { policy: fallback.length } },
+      candidates: fallback,
+      decisionsMap: Object.fromEntries(fallback.map((c) => [c.id, 'approve'])),
+    };
+    syncManualAiBoxesFromReview();
+  }
 
   updateMiniStats();
   updateHeroKpis();
@@ -975,7 +1515,8 @@ function renderFinalReport(data) {
   setText($('#kpi-guardian'), String(gFlags.length));
   setText($('#kpi-guardian-sub'), data?.guardian?.unsafe ? 'Unsafe flagged' : 'No unsafe flags');
 
-  renderEvidence(Array.isArray(policy.citations) ? policy.citations : []);
+  renderEvidence();
+  renderManualTextReviewList();
   renderChips($('#safety-concerns'), Array.isArray(data?.safety?.categories) ? data.safety.categories : [], 'No safety concerns detected.');
   renderChips($('#guardian-flags'), gFlags, 'No guardian flags.');
 
@@ -1033,6 +1574,9 @@ function handleSseEvent(eventName, payload) {
       setText($('#hero-kpi-pages'), String(meta?.pages ?? '—'));
       setText($('#hero-kpi-images'), String(meta?.images ?? '—'));
       logLine(`extract: pages=${meta?.pages ?? '—'} images=${meta?.images ?? '—'}`);
+      const status = Array.isArray(payload?.status) ? payload.status : [];
+      const cap = status.find((s) => String(s?.phase || '') === 'azure_di_page_cap_notice');
+      if (cap?.detail) logLine(`azure_notice: ${String(cap.detail)}`);
       break;
     }
     case 'precheck': {
@@ -1153,11 +1697,17 @@ async function startAnalysis() {
 
   const noImages = Boolean($('#no-images')?.checked);
   const temp = Number($('#temperature')?.value ?? 0) || 0;
+  const modelMode = normalizeModelMode(state.ui.modelMode);
+  if (!hasTermsConsentForMode(modelMode)) {
+    requireTerms({ online: modelMode === 'online' });
+    toast('error', 'Terms required', 'You must agree to the terms before using this demo.');
+    return;
+  }
   setText($('#hero-kpi-mode'), noImages ? 'Text-only' : 'Hybrid');
 
   resetRunUi();
   logLine(`upload: ${file.name} (${bytesToHuman(file.size)})`);
-  logLine(`settings: no_images=${noImages ? 'true' : 'false'} temperature=${temp.toFixed(2)}`);
+  logLine(`settings: no_images=${noImages ? 'true' : 'false'} temperature=${temp.toFixed(2)} model_mode=${modelMode}`);
 
   const btn = $('#btn-analyze');
   btn && (btn.disabled = true);
@@ -1167,11 +1717,18 @@ async function startAnalysis() {
     if (!ok) {
       toast('error', 'Backend offline', `Cannot reach ${state.apiBase}`);
     }
+    if (modelMode === 'online') {
+      const connected = await checkProviderStatus(true);
+      if (!connected) {
+        toast('error', 'Online provider not connected', 'Open Developer Mode and click Check Provider.');
+      }
+    }
 
     const form = new FormData();
     form.append('file', file);
     form.append('no_images', String(noImages));
     form.append('temperature', String(temp));
+    form.append('model_mode', modelMode);
 
     setPhase('extract_start');
 
@@ -1196,6 +1753,9 @@ function setFile(file) {
   destroyPreviewUrl();
   state.previewOpen = false;
   void deletePdfSession();
+  state.manual.boxes = [];
+  state.manual.aiBoxes = [];
+  state.run.redactionReview = null;
 
   state.file = file || null;
   const row = $('#file-row');
@@ -1225,6 +1785,9 @@ function wireUi() {
 
   // Health
   setInterval(checkHealth, 6000);
+  if (state.ui.modelMode === 'online') {
+    void checkProviderStatus(true);
+  }
 
   // Hero CTA scroll
   $('#btn-cta-start')?.addEventListener('click', () => {
@@ -1238,10 +1801,40 @@ function wireUi() {
   temp?.addEventListener('input', updateTemp);
   updateTemp();
 
+  const modelMode = $('#model-mode');
+  if (modelMode) {
+    modelMode.value = state.ui.modelMode;
+    modelMode.addEventListener('change', () => {
+      const nextMode = normalizeModelMode(modelMode.value);
+      const applyMode = () => {
+        setModelMode(nextMode);
+        toast('success', 'Model mode updated', state.ui.modelMode === 'local' ? 'Local/Offline mode selected' : 'Online API mode selected');
+        if (state.ui.modelMode === 'online') {
+          void checkProviderStatus(true);
+        }
+      };
+      if (!hasTermsConsentForMode(nextMode)) {
+        modelMode.value = state.ui.modelMode;
+        requireTerms({ online: nextMode === 'online', onAccept: applyMode });
+        return;
+      }
+      applyMode();
+    });
+  }
+
+  $('#btn-check-provider')?.addEventListener('click', () => void checkProviderStatus(false));
+  $('#btn-tos-agree')?.addEventListener('click', acceptTerms);
+
   // Dropzone / file selection
   const drop = $('#dropzone');
   const input = $('#file-input');
-  const pick = () => input?.click();
+  const pick = () => {
+    if (!hasTermsConsentForMode(state.ui.modelMode)) {
+      requireTerms({ online: state.ui.modelMode === 'online' });
+      return;
+    }
+    input?.click();
+  };
   drop?.addEventListener('click', pick);
   drop?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
@@ -1307,25 +1900,39 @@ function wireUi() {
   });
 
   // Manual redaction modal
-  const openManual = async () => {
+  const openManual = async ({ fromReport = false } = {}) => {
     try {
       if (!state.file) throw new Error('No file selected');
       if (!isPdfFile(state.file)) throw new Error('Manual redaction is only available for PDFs');
       openRedactModal();
-      setText($('#redact-hint'), 'Preparing session…');
-      await createPdfSession();
+      if (fromReport) {
+        resetReviewDecisionsToDefault();
+        setText($('#redact-hint'), 'Preparing generated redacted preview...');
+        await createBasePdfSession();
+        await createReviewDisplayPdfSession();
+      } else {
+        setText($('#redact-hint'), 'Preparing session...');
+        await createPdfSession();
+        state.manual.baseSessionId = state.manual.sessionId;
+        state.manual.baseOriginalName = state.manual.originalName;
+      }
       setManualPage(1);
       setText($('#redact-hint'), `Rendering page 1 • DPI ${state.manual.dpi}`);
       await renderManualPage(1);
       renderManualBoxList();
-      setText($('#redact-hint'), 'Drag to draw boxes. Click Generate when ready.');
+      if (fromReport) {
+        setText($('#redact-hint'), 'Previewing generated redactions. Approve/reject candidates, add boxes, then Generate to rebuild from the original PDF.');
+      } else {
+        setText($('#redact-hint'), 'Drag to draw boxes. Click Generate when ready.');
+      }
     } catch (e) {
       toast('error', 'Manual redaction unavailable', String(e?.message || e));
       closeRedactModal();
     }
   };
 
-  $('#btn-open-manual-redact')?.addEventListener('click', () => void openManual());
+  $('#btn-open-manual-redact')?.addEventListener('click', () => void openManual({ fromReport: false }));
+  $('#btn-open-manual-redact-report')?.addEventListener('click', () => void openManual({ fromReport: true }));
   $('#btn-close-redact')?.addEventListener('click', closeRedactModal);
   $('#redact-overlay')?.addEventListener('click', closeRedactModal);
 
@@ -1347,6 +1954,12 @@ function wireUi() {
     hide($('#btn-download-manual'));
   });
   $('#btn-generate-manual')?.addEventListener('click', () => void generateManualRedaction());
+
+  $('#evidence-filter-all')?.addEventListener('click', () => setReviewFilter('all'));
+  $('#evidence-filter-approved')?.addEventListener('click', () => setReviewFilter('approved'));
+  $('#evidence-filter-rejected')?.addEventListener('click', () => setReviewFilter('rejected'));
+  $('#evidence-prev')?.addEventListener('click', () => shiftReviewPage(-1));
+  $('#evidence-next')?.addEventListener('click', () => shiftReviewPage(1));
 
   // Drawing interactions
   const hit = $('#redact-hit');
@@ -1370,7 +1983,16 @@ function wireUi() {
   hit?.addEventListener('pointercancel', end);
 
   // Cleanup blob URL when leaving
-  window.addEventListener('beforeunload', () => { destroyPreviewUrl(); void deletePdfSession(); });
+  window.addEventListener('pagehide', () => {
+    flushAnalyzeResultCleanup();
+    destroyPreviewUrl();
+    void deletePdfSession();
+  });
+  window.addEventListener('beforeunload', () => {
+    flushAnalyzeResultCleanup();
+    destroyPreviewUrl();
+    void deletePdfSession();
+  });
   window.addEventListener('resize', () => {
     // Keep manual redaction overlay aligned if the viewport size changes.
     renderManualBoxesOnPage();
@@ -1379,6 +2001,7 @@ function wireUi() {
   // Initialize
   resetRunUi();
   renderPreviewUi();
+  requireTerms({ online: state.ui.modelMode === 'online' });
 }
 
 wireUi();

@@ -153,6 +153,18 @@
                   <input id="temperature" type="range" min="0" max="1" step="0.05" value="0" />
                 </div>
 
+                <div class="field dev-only">
+                  <div class="flex items-center justify-between gap-4">
+                    <label for="model-mode" class="text-sm text-neutral-300">Model Mode</label>
+                    <div class="text-xs font-medium text-indigo-400 tabular-nums"><span id="model-mode-value">online</span></div>
+                  </div>
+                  <select id="model-mode" class="select mt-2">
+                    <option value="online">Online API</option>
+                    <option value="local">Local / Offline</option>
+                  </select>
+                  <div id="model-mode-hint" class="mt-2 text-xs text-neutral-500">Uses hosted API verification.</div>
+                </div>
+
                 <button id="btn-analyze" class="btn-primary w-full" type="button">
                   Analyze Document
                 </button>
@@ -235,7 +247,10 @@
               </div>
 
               <div id="health-section" class="mt-6 dev-only">
-                <div class="text-sm font-medium text-neutral-300">API Health</div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="text-sm font-medium text-neutral-300">API Health</div>
+                  <button id="btn-check-provider" class="btn-tertiary text-sm" type="button">Check Provider</button>
+                </div>
                 <pre id="health-json" class="mt-3 code-block"></pre>
               </div>
             </div>
@@ -257,6 +272,10 @@
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
                 Download redacted PDF
               </a>
+              <button id="btn-open-manual-redact-report" type="button" class="btn-tertiary text-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-1 0v14m0-14L4 12m8-7l8 7"/></svg>
+                Review redactions
+              </button>
               <button id="btn-open-rules-2" class="btn-secondary text-sm" type="button">
                 <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                 Manage rules
@@ -292,33 +311,23 @@
               <div class="flex items-center justify-between gap-3">
                 <div>
                   <h3 class="text-base font-semibold tracking-tight">Evidence & Citations</h3>
-                  <p class="mt-0.5 text-xs text-neutral-500">Page-level source references</p>
+                  <p class="mt-0.5 text-xs text-neutral-500">Approve or reject proposed redactions by page</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button id="evidence-filter-all" class="btn-tertiary text-xs evidence-filter active" type="button">All</button>
+                  <button id="evidence-filter-approved" class="btn-tertiary text-xs evidence-filter" type="button">Approved</button>
+                  <button id="evidence-filter-rejected" class="btn-tertiary text-xs evidence-filter" type="button">Rejected</button>
+                </div>
+              </div>
+              <div class="mt-3 flex items-center justify-between gap-3 text-xs text-neutral-500">
+                <div id="evidence-counts">Approved: 0 • Rejected: 0 • Total: 0</div>
+                <div class="flex items-center gap-2">
+                  <button id="evidence-prev" class="btn-tertiary text-xs" type="button" aria-label="Previous citations page">←</button>
+                  <span id="evidence-page">Page 1 / 1</span>
+                  <button id="evidence-next" class="btn-tertiary text-xs" type="button" aria-label="Next citations page">→</button>
                 </div>
               </div>
               <div id="evidence-list" class="grid gap-3"></div>
-            </div>
-
-            <div class="card p-6">
-              <div>
-                <h3 class="text-base font-semibold tracking-tight">Safety & Moderation</h3>
-                <p class="mt-0.5 text-xs text-neutral-500">Content risk assessment</p>
-              </div>
-              <div class="grid gap-5">
-                <div>
-                  <div class="text-sm font-medium text-neutral-300 flex items-center gap-2">
-                    <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-                    Safety Concerns
-                  </div>
-                  <div class="mt-2.5" id="safety-concerns"></div>
-                </div>
-                <div>
-                  <div class="text-sm font-medium text-neutral-300 flex items-center gap-2">
-                    <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                    Guardian Flags
-                  </div>
-                  <div class="mt-2.5" id="guardian-flags"></div>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -387,6 +396,29 @@
         </div>
       </div>
 
+      <!-- Terms modal -->
+      <div id="tos-modal" class="modal hidden modal-priority" aria-hidden="true">
+        <div class="modal-overlay"></div>
+        <div class="modal-panel tos-panel" role="dialog" aria-modal="true" aria-label="Terms and conditions">
+          <div class="text-lg font-semibold tracking-tight">Terms and Conditions</div>
+          <div id="tos-mode-note" class="mt-2 text-sm text-amber-300">You must agree to continue using this demo.</div>
+          <div class="mt-4 text-sm text-neutral-300 leading-relaxed">
+            This is a public demo of a product and is provided for evaluation purposes only.
+          </div>
+          <ul class="tos-list mt-4">
+            <li>Due to OCR limitations and provider constraints, public OCR processing is rate-limited to the first 2 pages per PDF.</li>
+            <li>Do not use the public-facing version for company-sensitive documents or personally identifying information.</li>
+            <li>As the user, you are responsible for any content you upload and the consequences of its use.</li>
+            <li>By using this demo, you agree to comply with all applicable laws and regulations regarding data privacy and security.</li>
+            <li>The public OCR processing uses Azure Document Intelligence services, which encrypts and then <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/responsible-ai/document-intelligence/data-privacy-security?view=foundry-classic">holds the information in transit for 24 hours</a>. I cannot control this process. I will not ever personally check or use your data, and after you exit the tab, the <a href="https://learn.microsoft.com/en-us/rest/api/aiservices/document-models/delete-analyze-result?view=rest-aiservices-v4.0%20(2024-11-30)&preserve-view=true&tabs=HTTP">delete analyze result API</a> will be triggered to remove your data on my end.</li>
+          </ul>
+          <div class="mt-5 text-xs text-neutral-500">By clicking Agree, you confirm you understand and accept these terms.</div>
+          <div class="mt-6 flex items-center justify-end gap-3">
+            <button id="btn-tos-agree" class="btn-primary text-sm" type="button">I Agree to the Terms</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Toasts -->
       <div id="toasts" class="toasts" aria-live="polite" aria-relevant="additions"></div>
 
@@ -434,31 +466,38 @@
                   </button>
                   <button id="btn-generate-manual" class="btn-primary text-sm flex-1" type="button">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    Generate Redacted PDF
+	                    Generate Redacted Document
                   </button>
                 </div>
-                <a id="btn-download-manual" class="btn-secondary text-sm hidden text-center" href="#" download>
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                  Download Manual Redaction
-                </a>
-              </div>
+	                <a id="btn-download-manual" class="btn-secondary text-sm hidden text-center" href="#" download>
+	                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+	                  Download Manual Redaction
+	                </a>
+	              </div>
 
-              <div class="mt-6">
-                <div class="text-sm font-medium text-neutral-300">Active Boxes</div>
-                <div id="redact-box-list" class="mt-3 grid gap-2 max-h-48 overflow-auto"></div>
-              </div>
+	              <div class="mt-6">
+	                <div class="text-sm font-medium text-neutral-300">Page Preview</div>
+	                <div class="mt-3 redact-canvas">
+	                  <img id="redact-img" alt="Rendered PDF page" />
+	                  <div id="redact-box-layer" class="redact-layer" aria-hidden="true"></div>
+	                  <div id="redact-draw-layer" class="redact-layer" aria-hidden="true"></div>
+	                  <div id="redact-hit" class="redact-hit" aria-label="Draw redaction boxes"></div>
+	                </div>
+	                <div class="mt-2.5 text-xs text-neutral-500" id="redact-hint">Click and drag to create redaction areas</div>
+	              </div>
+
+	              <div class="mt-6">
+	                <div class="text-sm font-medium text-neutral-300">Active Boxes</div>
+	                <div id="redact-box-list" class="mt-3 grid gap-2 max-h-48 overflow-auto"></div>
+	              </div>
             </div>
 
-            <div class="card p-6">
-              <div class="text-sm font-medium text-neutral-300">Page Preview</div>
-              <div class="mt-3 redact-canvas">
-                <img id="redact-img" alt="Rendered PDF page" />
-                <div id="redact-box-layer" class="redact-layer" aria-hidden="true"></div>
-                <div id="redact-draw-layer" class="redact-layer" aria-hidden="true"></div>
-                <div id="redact-hit" class="redact-hit" aria-label="Draw redaction boxes"></div>
-              </div>
-              <div class="mt-2.5 text-xs text-neutral-500" id="redact-hint">Click and drag to create redaction areas</div>
-            </div>
+	            <div class="card p-6">
+	              <div class="text-sm font-medium text-neutral-300">Text Candidates</div>
+	              <div class="mt-2 text-xs text-neutral-500">Approve or reject text redactions from analysis.</div>
+	              <div id="redact-review-summary" class="mt-2 text-xs text-neutral-500">Approved: 0 - Rejected: 0 - Total: 0</div>
+	              <div id="redact-text-list" class="mt-3 grid gap-2 max-h-80 overflow-auto"></div>
+	            </div>
           </div>
         </div>
       </div>
