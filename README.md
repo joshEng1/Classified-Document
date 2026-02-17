@@ -138,6 +138,7 @@ Use this when your frontend is hosted separately (for example on Vercel or your 
    - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
    - `AZURE_DOCUMENT_INTELLIGENCE_KEY`
    - `CORS_ORIGINS` (set to your frontend origin(s), comma-separated)
+   - `DOCLING_URL` (required for generated/manual redacted PDF download endpoints)
 4. Deploy and confirm health:
    - `GET https://<your-render-service>.onrender.com/health`
 5. Point frontend API base to Render:
@@ -148,6 +149,7 @@ Notes:
 - Keep `CORS_ALLOW_ALL=false` in production.
 - Keep secrets only in Render environment variables (never in frontend code).
 - This backend is stateless; uploaded/redacted artifacts are temporary.
+- If `DOCLING_URL` is missing/unreachable, analysis still works but `redacted_pdf` will be unavailable.
 
 ## Security Hardening
 

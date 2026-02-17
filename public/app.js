@@ -1740,6 +1740,11 @@ async function startAnalysis() {
     }
     toast('success', 'Streaming started', 'Processing document…');
     await readSseStream(res.body, handleSseEvent);
+    if (!state.run.final && state.run.phase !== 'final_done') {
+      logLine('stream_closed_before_final');
+      toast('error', 'Analysis incomplete', 'Stream closed before final report. Check API/docling logs.');
+      setPhase('final_done');
+    }
   } catch (e) {
     toast('error', 'Request failed', String(e?.message || e));
     logLine(`request_failed: ${String(e?.message || e)}`);

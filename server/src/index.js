@@ -539,7 +539,7 @@ app.use((req, _res, next) => {
   next();
 });
 
-const maxUploadMb = Math.max(1, Number(process.env.MAX_UPLOAD_MB || '25') || 25);
+const maxUploadMb = Math.max(1, Number(process.env.MAX_UPLOAD_MB || '5') || 5);
 const upload = multer({
   dest: uploadDir,
   limits: { fileSize: maxUploadMb * 1024 * 1024 },

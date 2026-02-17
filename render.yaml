@@ -1,5 +1,13 @@
 services:
   - type: web
+    name: doc-analyzer-docling
+    runtime: docker
+    rootDir: docling-service
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+
+  - type: web
     name: doc-analyzer-api
     runtime: node
     rootDir: server
@@ -10,6 +18,8 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      - key: MAX_UPLOAD_MB
+        value: "5"
       - key: MODEL_MODE_DEFAULT
         value: online
       - key: ONLINE_PROVIDER
@@ -29,7 +39,9 @@ services:
       - key: PUBLIC_API_RATE_LIMIT_WINDOW_MS
         value: "60000"
       - key: PUBLIC_API_RATE_LIMIT_MAX_REQUESTS
-        value: "8"
+        value: "3"
+      - key: PUBLIC_API_RATE_LIMIT_PATHS
+        value: /api/process,/api/process-stream,/api/process-batch
       - key: CORS_ALLOW_ALL
         value: "false"
       - key: CORS_ALLOW_NULL
@@ -60,3 +72,5 @@ services:
         value: "1200"
       - key: AZURE_DOCUMENT_INTELLIGENCE_MAX_PAGES
         value: "5"
+      - key: DOCLING_URL
+        value: https://doc-analyzer-docling.onrender.com
