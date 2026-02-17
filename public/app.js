@@ -1914,7 +1914,15 @@ function wireUi() {
         resetReviewDecisionsToDefault();
         setText($('#redact-hint'), 'Preparing generated redacted preview...');
         await createBasePdfSession();
-        await createReviewDisplayPdfSession();
+        try {
+          await createReviewDisplayPdfSession();
+        } catch {
+          // If auto-generated redacted PDF is unavailable, keep manual redaction usable.
+          await createPdfSession();
+          state.manual.baseSessionId = state.manual.baseSessionId || state.manual.sessionId;
+          state.manual.baseOriginalName = state.manual.baseOriginalName || state.manual.originalName;
+          toast('error', 'Generated preview unavailable', 'Falling back to original PDF for manual redaction.');
+        }
       } else {
         setText($('#redact-hint'), 'Preparing session...');
         await createPdfSession();

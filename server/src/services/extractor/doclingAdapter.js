@@ -19,7 +19,7 @@ export async function extractWithDocling({ filePath }) {
     const resp = await axios.post(`${base}/extract`, form, {
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
-      timeout: envTimeout('DOCLING_EXTRACT_TIMEOUT_MS', 120000),
+      timeout: envTimeout('DOCLING_EXTRACT_TIMEOUT_MS', 180000),
     });
     const json = resp.data || {};
     const text = (json.text || (Array.isArray(json.blocks) ? json.blocks.map(b => b.text).join('\n') : '')).trim();
@@ -41,7 +41,7 @@ export async function getPdfSignals({ filePath }) {
     const resp = await axios.post(`${base}/signals`, form, {
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
-      timeout: envTimeout('DOCLING_SIGNALS_TIMEOUT_MS', 120000),
+      timeout: envTimeout('DOCLING_SIGNALS_TIMEOUT_MS', 240000),
     });
     return resp.data || null;
   } catch (err) {
@@ -61,7 +61,7 @@ export async function renderPdfRegions({ filePath, regions, dpi = 220 }) {
     const resp = await axios.post(`${base}/render-regions`, form, {
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
-      timeout: envTimeout('DOCLING_RENDER_TIMEOUT_MS', 180000),
+      timeout: envTimeout('DOCLING_RENDER_TIMEOUT_MS', 240000),
     });
     return resp.data || null;
   } catch (err) {
@@ -81,7 +81,7 @@ export async function renderPdfPages({ filePath, pages, dpi = 220 }) {
     const resp = await axios.post(`${base}/render-pages`, form, {
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
-      timeout: envTimeout('DOCLING_RENDER_TIMEOUT_MS', 180000),
+      timeout: envTimeout('DOCLING_RENDER_TIMEOUT_MS', 240000),
     });
     return resp.data || null;
   } catch (err) {
@@ -103,7 +103,7 @@ export async function redactPdf({ filePath, boxes = [], searchTexts = [], detect
     const resp = await axios.post(`${base}/redact`, form, {
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
-      timeout: envTimeout('DOCLING_REDACT_TIMEOUT_MS', 90000),
+      timeout: envTimeout('DOCLING_REDACT_TIMEOUT_MS', 300000),
       responseType: 'arraybuffer',
     });
 
