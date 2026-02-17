@@ -20,4 +20,4 @@ RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/c
 
 COPY main.py ./
 EXPOSE 7000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7000"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-7000}"]
