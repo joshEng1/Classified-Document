@@ -1127,3 +1127,7 @@ def root():
         "health": "/health",
         "endpoints": ["/extract", "/signals", "/render-pages", "/render-regions", "/redact"],
     }
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
