@@ -24,6 +24,7 @@ import { summarizeChunk } from './services/slm/slmClient.js';
 import { moderateText } from './services/moderation/guardian.js';
 import { summarizeChunkWithGemini, moderateTextWithGemini, detectPIIWithGemini } from './services/online/geminiAnalysis.js';
 import { redactPdf, getPdfSignals, renderPdfPages } from './services/extractor/doclingAdapter.js';
+import { inspectPdfPagesBasic, rasterizePdfPagesAsBase64 } from './services/extractor/pdfRasterize.js';
 import { loadRedactionRules, addRedactionRule, removeRedactionRule } from './services/redaction/redactionRules.js';
 import { deleteAnalyzeResultWithAzureDocumentIntelligence } from './services/azure/documentIntelligenceClient.js';
 import { safeErrorDetail } from './util/security.js';
@@ -1346,14 +1347,28 @@ app.post('/api/pdf/session', upload.single('file'), async (req, res) => {
   }
 
   try {
-    const signals = await getPdfSignals({ filePath: sessionPath });
+    let signals = await getPdfSignals({ filePath: sessionPath });
+    let pages = Number(signals?.pages || 0) || 0;
+    let pageSignals = Array.isArray(signals?.page_signals) ? signals.page_signals : [];
+    if (!pages || !pageSignals.length) {
+      try {
+        const basic = await inspectPdfPagesBasic({ filePath: sessionPath });
+        if (Number(basic?.pages || 0) > 0) {
+          pages = Number(basic.pages || 0) || pages;
+          pageSignals = Array.isArray(basic?.page_signals) ? basic.page_signals : pageSignals;
+          console.warn('[pdf-session] using local page signal fallback');
+        }
+      } catch (fallbackErr) {
+        console.warn(`[pdf-session] local page signal fallback failed: ${safeErrorDetail(fallbackErr)}`);
+      }
+    }
     res.json({
       ok: true,
       id,
       file: path.basename(sessionPath),
       original_name: originalName || 'document.pdf',
-      pages: Number(signals?.pages || 0) || 0,
-      page_signals: Array.isArray(signals?.page_signals) ? signals.page_signals : [],
+      pages,
+      page_signals: pageSignals,
     });
   } catch (e) {
     logServerError('pdf-session-signals', e);
@@ -1383,8 +1398,29 @@ app.post('/api/pdf/render-pages', async (req, res) => {
 
     const pageList = pages.map(p => Number(p)).filter(p => Number.isFinite(p) && p >= 1 && p <= 200);
     const out = await renderPdfPages({ filePath, pages: pageList, dpi });
-    if (!out) return res.status(500).json({ ok: false, error: 'render_failed' });
-    res.json({ ok: true, ...out });
+    if (out && Array.isArray(out?.images) && out.images.length) {
+      return res.json({ ok: true, ...out });
+    }
+
+    try {
+      const localImages = await rasterizePdfPagesAsBase64({
+        filePath,
+        pages: pageList.length ? pageList : [1],
+        dpi,
+        imageFormat: 'png',
+      });
+      const images = localImages.map((img) => ({
+        page: Number(img?.page || 0) || 0,
+        mime: String(img?.mime_type || 'image/png'),
+        data_b64: String(img?.image_base64 || ''),
+      })).filter((img) => img.page > 0 && img.data_b64);
+      if (!images.length) return res.status(500).json({ ok: false, error: 'render_failed' });
+      console.warn('[pdf-render-pages] using local raster fallback');
+      return res.json({ ok: true, images, dpi });
+    } catch (fallbackErr) {
+      console.warn(`[pdf-render-pages] local fallback failed: ${safeErrorDetail(fallbackErr)}`);
+      return res.status(500).json({ ok: false, error: 'render_failed' });
+    }
   } catch (e) {
     logServerError('pdf-render-pages', e);
     res.status(500).json({ ok: false, error: 'render_failed', detail: safeErrorDetail(e) });
@@ -1430,7 +1466,13 @@ app.post('/api/pdf/redact', async (req, res) => {
     let searchTexts = [...cleanSearchTexts];
     if (includeRules) {
       const signals = await getPdfSignals({ filePath });
-      const pagesTotal = Math.max(1, Number(signals?.pages || 1));
+      let pagesTotal = Math.max(1, Number(signals?.pages || 1));
+      if (pagesTotal <= 1) {
+        try {
+          const basic = await inspectPdfPagesBasic({ filePath });
+          pagesTotal = Math.max(pagesTotal, Number(basic?.pages || 1));
+        } catch { }
+      }
       const rules = loadRedactionRules();
       for (const r of rules.slice(0, 20)) {
         for (let p = 1; p <= pagesTotal; p++) {
