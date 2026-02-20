@@ -1,11 +1,19 @@
 import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';
+import { redactPdfNative } from './nativeRedactor.js';
 
 function envTimeout(name, fallbackMs) {
   const raw = Number(process.env[name] || fallbackMs);
   if (!Number.isFinite(raw) || raw < 1000) return fallbackMs;
   return raw;
+}
+
+function resolveRedactEngine() {
+  const raw = String(process.env.REDACT_ENGINE || 'auto').trim().toLowerCase();
+  if (raw === 'native' || raw === 'docling' || raw === 'auto') return raw;
+  console.warn(`[redact] invalid REDACT_ENGINE="${raw}", using "auto"`);
+  return 'auto';
 }
 
 // Attempts to use a Docling REST endpoint if configured. Falls back to null.
@@ -92,7 +100,36 @@ export async function renderPdfPages({ filePath, pages, dpi = 220 }) {
 
 export async function redactPdf({ filePath, boxes = [], searchTexts = [], detectPii = true }) {
   const base = process.env.DOCLING_URL;
-  if (!base || !filePath) return null;
+  if (!filePath) return null;
+  const engine = resolveRedactEngine();
+  const allowNativeFallback = String(process.env.NATIVE_REDACT_FALLBACK || 'true').toLowerCase() !== 'false';
+
+  async function nativeFallback(reason) {
+    if (engine === 'docling') return null;
+    if (engine === 'auto' && !allowNativeFallback) return null;
+    try {
+      if (engine === 'native') {
+        console.warn('[redact] using native engine');
+      } else {
+        console.warn(`[docling] redact falling back to native engine (${reason})`);
+      }
+      return await redactPdfNative({ filePath, boxes, searchTexts, detectPii });
+    } catch (fallbackErr) {
+      console.warn(`[native-redact] fallback failed: ${fallbackErr?.message || fallbackErr}`);
+      return null;
+    }
+  }
+
+  if (engine === 'native') return nativeFallback('forced_native');
+
+  if (engine === 'docling' && !base) {
+    console.warn('[redact] REDACT_ENGINE=docling but DOCLING_URL is missing');
+    return null;
+  }
+
+  if (!base) {
+    return nativeFallback('missing_docling_url');
+  }
   try {
     const form = new FormData();
     form.append('file', fs.createReadStream(filePath));
@@ -110,6 +147,6 @@ export async function redactPdf({ filePath, boxes = [], searchTexts = [], detect
     return Buffer.from(resp.data);
   } catch (err) {
     console.warn(`[docling] redact failed: ${err?.message || err}`);
-    return null;
+    return nativeFallback('docling_error');
   }
 }

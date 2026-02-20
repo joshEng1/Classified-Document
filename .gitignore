@@ -25,6 +25,7 @@ logs/
 
 # Uploads and temporary files
 uploads/
+server/tmp_*.pdf
 *.tmp
 *.temp
 

@@ -90,6 +90,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
   - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` and `AZURE_DOCUMENT_INTELLIGENCE_KEY` (online OCR)
   - `LLAMA_URL` (llama.cpp server URL)
   - `DOCLING_URL` (Docling REST URL; Docker Compose sets this to `http://docling:7000` inside the container)
+  - `REDACT_ENGINE=auto|native|docling` (explicit redaction engine selection)
+  - `NATIVE_REDACT_FALLBACK=true|false` (only used when `REDACT_ENGINE=auto`)
+  - `NATIVE_REDACT_DPI` and `NATIVE_REDACT_JPEG_QUALITY` (quality/performance knobs for native fallback)
   - `VERIFY_SECOND_PASS=true|false` (Docker Compose defaults this to true)
   - `REDACT_PII=true|false` and `REDACT_OUTPUT_PDF=true|false`
   - `OFFLINE_MODE=true|false`
@@ -138,7 +141,8 @@ Use this when your frontend is hosted separately (for example on Vercel or your 
    - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
    - `AZURE_DOCUMENT_INTELLIGENCE_KEY`
    - `CORS_ORIGINS` (set to your frontend origin(s), comma-separated)
-   - `DOCLING_URL` (required for generated/manual redacted PDF download endpoints)
+   - `DOCLING_URL` (optional but recommended for full-fidelity redaction + manual preview)
+   - `REDACT_ENGINE` (`auto`, `native`, or `docling`)
 4. Deploy and confirm health:
    - `GET https://<your-render-service>.onrender.com/health`
 5. Point frontend API base to Render:
@@ -149,7 +153,11 @@ Notes:
 - Keep `CORS_ALLOW_ALL=false` in production.
 - Keep secrets only in Render environment variables (never in frontend code).
 - This backend is stateless; uploaded/redacted artifacts are temporary.
-- If `DOCLING_URL` is missing/unreachable, analysis still works but `redacted_pdf` will be unavailable.
+- Redaction engine behavior:
+  - `REDACT_ENGINE=native`: always use Node-native raster redaction (fastest to deploy, no Docling dependency).
+  - `REDACT_ENGINE=docling`: require Docling for redaction (no native fallback).
+  - `REDACT_ENGINE=auto` (default): try Docling first; fallback to native only if `NATIVE_REDACT_FALLBACK=true`.
+- If `DOCLING_URL` is missing/unreachable and native mode/fallback is used, output is rasterized (image-based) and manual preview quality/features may be reduced.
 
 ## Security Hardening
 

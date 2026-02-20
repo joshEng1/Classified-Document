@@ -6,6 +6,7 @@ export async function rasterizePdfPagesAsBase64({
   filePath,
   dpi = 150,
   maxPages = 0,
+  pages = [],
   imageFormat = 'png',
 }) {
   if (!filePath) return [];
@@ -19,15 +20,26 @@ export async function rasterizePdfPagesAsBase64({
     useWorkerFetch: false,
     isEvalSupported: false,
     disableFontFace: true,
+    verbosity: pdfjsLib.VerbosityLevel.ERRORS,
   });
 
   const pdf = await loadingTask.promise;
   const totalPages = Number(pdf?.numPages || 0) || 0;
+  const requestedPages = Array.isArray(pages)
+    ? Array.from(new Set(
+      pages
+        .map((p) => Number(p))
+        .filter((p) => Number.isFinite(p) && p >= 1 && p <= totalPages)
+        .map((p) => Math.floor(p))
+    )).sort((a, b) => a - b)
+    : [];
   const limit = Number(maxPages || 0);
-  const pageCount = limit > 0 ? Math.min(totalPages, limit) : totalPages;
+  const pageList = requestedPages.length
+    ? requestedPages
+    : Array.from({ length: (limit > 0 ? Math.min(totalPages, limit) : totalPages) }, (_, i) => i + 1);
   const out = [];
 
-  for (let p = 1; p <= pageCount; p++) {
+  for (const p of pageList) {
     const page = await pdf.getPage(p);
     const viewport = page.getViewport({ scale });
     const width = Math.max(1, Math.floor(viewport.width));
@@ -49,4 +61,48 @@ export async function rasterizePdfPagesAsBase64({
   }
 
   return out;
+}
+
+export async function inspectPdfPagesBasic({
+  filePath,
+  maxPages = 0,
+}) {
+  if (!filePath) return { pages: 0, page_signals: [] };
+  const bytes = fs.readFileSync(filePath);
+  const data = new Uint8Array(bytes);
+
+  const loadingTask = pdfjsLib.getDocument({
+    data,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    disableFontFace: true,
+    verbosity: pdfjsLib.VerbosityLevel.ERRORS,
+  });
+
+  const pdf = await loadingTask.promise;
+  const totalPages = Number(pdf?.numPages || 0) || 0;
+  const limit = Number(maxPages || 0);
+  const pageCount = limit > 0 ? Math.min(totalPages, limit) : totalPages;
+  const page_signals = [];
+
+  for (let p = 1; p <= pageCount; p++) {
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale: 1.0 });
+    page_signals.push({
+      page: p,
+      width: Number(viewport?.width || 0),
+      height: Number(viewport?.height || 0),
+      text_coverage: 0,
+      image_coverage: 0,
+      non_text_coverage: 1,
+      figure_count: 0,
+      figure_content_missing: false,
+      image_boxes: [],
+    });
+  }
+
+  return {
+    pages: pageCount,
+    page_signals,
+  };
 }
