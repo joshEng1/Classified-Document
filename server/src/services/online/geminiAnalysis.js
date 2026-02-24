@@ -44,7 +44,12 @@ export async function summarizeChunkWithGemini({ text, apiKey, temperature }) {
       key_phrases: Array.isArray(out?.key_phrases) ? out.key_phrases.map(v => String(v)).filter(Boolean).slice(0, 8) : [],
     };
   } catch (e) {
-    return { summary: '', key_phrases: [], error: safeErrorDetail(e) };
+    return {
+      summary: '',
+      key_phrases: [],
+      error: safeErrorDetail(e),
+      rate_limited: isGeminiRateLimitedError(e),
+    };
   }
 }
 
@@ -91,6 +96,7 @@ export async function moderateTextWithGemini({ text, apiKey, categories = DEFAUL
       unsafe: false,
       sensitive: false,
       error: safeErrorDetail(e),
+      rate_limited: isGeminiRateLimitedError(e),
     };
   }
 }
@@ -227,6 +233,22 @@ function normalizeSeverity(sev, type) {
   if (type === 'SSN') return 'critical';
   if (type === 'Phone' || type === 'Email' || type === 'Address' || type === 'DOB') return 'high';
   return 'medium';
+}
+
+function isGeminiRateLimitedError(err) {
+  const status = Number(err?.response?.status || 0) || 0;
+  if (status === 429) return true;
+  const text = [
+    safeErrorDetail(err, ''),
+    String(err?.message || ''),
+    (() => {
+      try { return JSON.stringify(err?.response?.data || ''); } catch { return ''; }
+    })(),
+  ].join(' ').toLowerCase();
+  return text.includes('resource_exhausted') ||
+    text.includes('rate limit') ||
+    text.includes('too many requests') ||
+    text.includes('quota');
 }
 
 const UNSAFE_SET = new Set(['hate', 'exploitative', 'self_harm', 'sexual', 'violence', 'criminal', 'political_news', 'cyber_threat', 'child_safety', 'toxicity', 'jailbreak']);

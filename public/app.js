@@ -1,5 +1,4 @@
 const $ = (sel) => document.querySelector(sel);
-const REVIEW_PAGE_SIZE = 10;
 
 function nowTime() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -45,16 +44,6 @@ function joinUrl(base, path) {
 function loadUiMode() {
   const saved = String(localStorage.getItem('uiMode') || '').trim().toLowerCase();
   return saved === 'dev' ? 'dev' : 'business';
-}
-
-function normalizeModelMode(value) {
-  const v = String(value || '').trim().toLowerCase();
-  if (v === 'local' || v === 'offline') return 'local';
-  return 'online';
-}
-
-function loadModelMode() {
-  return normalizeModelMode(localStorage.getItem('modelMode') || 'online');
 }
 
 function setText(el, text) {
@@ -137,7 +126,7 @@ function setProgress(completed, total) {
   const pct = tot > 0 ? clamp(Math.round((done / tot) * 100), 0, 100) : 0;
   if (bar) bar.style.width = `${pct}%`;
   if (txt) txt.textContent = `${done} / ${tot || 0}`;
-  if (right) right.textContent = tot > 0 ? `${pct}%` : '—';
+  if (right) right.textContent = tot > 0 ? `${pct}%` : '-';
 }
 
 function renderChips(container, items, emptyText = 'None') {
@@ -162,8 +151,15 @@ function renderChips(container, items, emptyText = 'None') {
   container.appendChild(row);
 }
 
-async function fetchJson(url, opts) {
-  const res = await fetch(url, opts);
+async function fetchJson(url, opts = {}, timeoutMs = 12000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), Math.max(1000, Number(timeoutMs || 0) || 12000));
+  let res = null;
+  try {
+    res = await fetch(url, { ...(opts || {}), signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status}: ${txt || res.statusText}`);
@@ -176,32 +172,20 @@ const state = {
   apiBase: resolveApiBase(),
   ui: {
     mode: loadUiMode(), // 'business' | 'dev'
-    modelMode: loadModelMode(), // 'online' | 'local'
     logBuffer: [],
     lastHealth: null,
     lastHealthError: null,
-    lastProviderStatus: null,
   },
-  terms: {
-    accepted: false,
-    onlineAccepted: false,
-    requiresOnline: false,
-    onAccept: null,
-  },
-  cleanupRefs: new Set(),
   file: null,
   previewUrl: null,
   previewOpen: false,
   manual: {
     sessionId: null,
     originalName: null,
-    baseSessionId: null,
-    baseOriginalName: null,
     pages: 0,
     pageSignals: [],
     currentPage: 1,
     boxes: [],
-    aiBoxes: [],
     drawing: null,
     dpi: 180,
   },
@@ -210,6 +194,7 @@ const state = {
     phase: 'idle',
     chunksTotal: 0,
     chunksCompleted: 0,
+    geminiRateLimitSeen: false,
     moderationFlags: new Map(),
     piiByType: new Map(),
     piiTotal: 0,
@@ -219,9 +204,6 @@ const state = {
     policy: null,
     final: null,
     redactedPdf: null,
-    redactionReview: null,
-    reviewFilter: 'all',
-    reviewPage: 0,
   },
 };
 
@@ -255,30 +237,15 @@ function applyUiMode() {
     renderActivityLogFromBuffer();
     const healthPre = $('#health-json');
     if (healthPre) {
-      if (state.ui.lastHealth) {
-        const payload = state.ui.lastProviderStatus
-          ? { ...state.ui.lastHealth, provider_status: state.ui.lastProviderStatus }
-          : state.ui.lastHealth;
-        setText(healthPre, JSON.stringify(payload, null, 2));
-      }
+      if (state.ui.lastHealth) setText(healthPre, JSON.stringify(state.ui.lastHealth, null, 2));
       else if (state.ui.lastHealthError) setText(healthPre, String(state.ui.lastHealthError));
-      else setText(healthPre, 'â€”');
+      else setText(healthPre, 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â');
     }
   }
 
   // Redaction overlays/list differ in dev mode (coords + labels).
   renderManualBoxList();
   renderManualBoxesOnPage();
-
-  const modeSelect = $('#model-mode');
-  if (modeSelect) modeSelect.value = state.ui.modelMode;
-  setText($('#model-mode-value'), state.ui.modelMode === 'local' ? 'local/offline' : 'online');
-  setText(
-    $('#model-mode-hint'),
-    state.ui.modelMode === 'local'
-      ? 'Uses local/offline model path (no hosted verifier calls).'
-      : 'Uses hosted API verification.'
-  );
 
   // Update status pill formatting for the selected mode.
   void checkHealth();
@@ -295,19 +262,13 @@ function toggleUiMode() {
   toast('success', 'Mode changed', isDevMode() ? 'Developer mode enabled' : 'Business mode enabled');
 }
 
-function setModelMode(mode) {
-  state.ui.modelMode = normalizeModelMode(mode);
-  localStorage.setItem('modelMode', state.ui.modelMode);
-  applyUiMode();
-}
-
 function resetRunUi() {
-  state.manual.aiBoxes = [];
   state.run = {
     startedAt: Date.now(),
     phase: 'idle',
     chunksTotal: 0,
     chunksCompleted: 0,
+    geminiRateLimitSeen: false,
     moderationFlags: new Map(),
     piiByType: new Map(),
     piiTotal: 0,
@@ -317,10 +278,9 @@ function resetRunUi() {
     policy: null,
     final: null,
     redactedPdf: null,
-    redactionReview: null,
-    reviewFilter: 'all',
-    reviewPage: 0,
   };
+
+  $('#dropzone')?.classList.remove('is-processing');
 
   setStepState('step-extract', 'active', 'Waiting…');
   setStepState('step-chunk', '', 'Waiting…');
@@ -332,38 +292,33 @@ function resetRunUi() {
 
   setText($('#mini-flags'), '0');
   setText($('#mini-pii'), '0');
-  setText($('#mini-pages'), '—');
-  setText($('#hero-kpi-sensitivity'), '—');
-  setText($('#hero-kpi-unsafe'), 'Unsafe: —');
-  setText($('#hero-kpi-pages'), '—');
-  setText($('#hero-kpi-images'), '—');
-  setText($('#hero-kpi-pii'), '—');
-  setText($('#hero-kpi-pii-types'), 'Top types: —');
-  setText($('#hero-kpi-mode'), '—');
+  setText($('#mini-pages'), '-');
+  setText($('#hero-kpi-sensitivity'), '-');
+  setText($('#hero-kpi-unsafe'), 'Unsafe: -');
+  setText($('#hero-kpi-pages'), '-');
+  setText($('#hero-kpi-images'), '-');
+  setText($('#hero-kpi-pii'), '-');
+  setText($('#hero-kpi-pii-types'), 'Top types: -');
+  setText($('#hero-kpi-mode'), '-');
 
   const log = $('#activity-log');
   if (log) log.innerHTML = '';
 
   hide($('#report'));
-  setText($('#report-subtitle'), '—');
-  setText($('#kpi-overall'), '—');
-  setText($('#kpi-overall-sub'), '—');
-  setText($('#kpi-pages'), '—');
-  setText($('#kpi-images'), '—');
-  setText($('#kpi-pii-total'), '—');
-  setText($('#kpi-pii-types'), '—');
-  setText($('#kpi-guardian'), '—');
-  setText($('#kpi-guardian-sub'), '—');
+  setText($('#report-subtitle'), '-');
+  setText($('#kpi-overall'), '-');
+  setText($('#kpi-overall-sub'), '-');
+  setText($('#kpi-pages'), '-');
+  setText($('#kpi-images'), '-');
+  setText($('#kpi-pii-total'), '-');
+  setText($('#kpi-pii-types'), '-');
+  setText($('#kpi-guardian'), '-');
+  setText($('#kpi-guardian-sub'), '-');
   $('#evidence-list')?.replaceChildren();
-  $('#redact-text-list')?.replaceChildren();
-  setText($('#evidence-counts'), 'Approved: 0 • Rejected: 0 • Total: 0');
-  setText($('#evidence-page'), 'Page 1 / 1');
-  setText($('#redact-review-summary'), 'Approved: 0 • Rejected: 0 • Total: 0');
   renderChips($('#safety-concerns'), []);
   renderChips($('#guardian-flags'), []);
   setText($('#audit-json'), '');
   hide($('#btn-download-redacted'));
-  updateEvidenceControls();
 }
 
 function updateMiniStats() {
@@ -372,7 +327,7 @@ function updateMiniStats() {
   for (const v of state.run.moderationFlags.values()) flagTotal += v;
   setText($('#mini-flags'), String(flagTotal));
   setText($('#mini-pii'), String(state.run.piiTotal));
-  setText($('#mini-pages'), String(state.run.meta?.pages ?? '—'));
+  setText($('#mini-pages'), String(state.run.meta?.pages ?? '-'));
 }
 
 function updateHeroKpis() {
@@ -380,19 +335,20 @@ function updateHeroKpis() {
   if (policy?.sensitivity) setText($('#hero-kpi-sensitivity'), policy.sensitivity);
   if (policy?.unsafe != null) setText($('#hero-kpi-unsafe'), `Unsafe: ${policy.unsafe ? 'Yes' : 'No'}`);
   if (state.run.meta) {
-    setText($('#hero-kpi-pages'), String(state.run.meta.pages ?? '—'));
-    setText($('#hero-kpi-images'), String(state.run.meta.images ?? '—'));
+    setText($('#hero-kpi-pages'), String(state.run.meta.pages ?? '-'));
+    setText($('#hero-kpi-images'), String(state.run.meta.images ?? '-'));
   }
   if (state.run.piiTotal) {
     setText($('#hero-kpi-pii'), String(state.run.piiTotal));
     const top = Array.from(state.run.piiByType.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k);
-    setText($('#hero-kpi-pii-types'), `Top types: ${top.length ? top.join(', ') : '—'}`);
+    setText($('#hero-kpi-pii-types'), `Top types: ${top.length ? top.join(', ') : '-'}`);
   }
 }
 
 function setPhase(phase) {
   state.run.phase = phase;
   if (phase === 'extract_start') {
+    $('#dropzone')?.classList.add('is-processing');
     setStepState('step-extract', 'active', 'Extracting document…');
     setStepState('step-chunk', '', 'Waiting…');
     setStepState('step-moderate', '', 'Waiting…');
@@ -406,72 +362,59 @@ function setPhase(phase) {
   }
   if (phase === 'chunk_processing') {
     setStepState('step-extract', 'done', 'Extraction complete');
-    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '—'}`);
+    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '-'}`);
     setStepState('step-moderate', 'active', 'Running moderation & PII…');
     setStepState('step-final', '', 'Waiting…');
   }
   if (phase === 'final_analysis_start') {
     setStepState('step-extract', 'done', 'Extraction complete');
-    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '—'}`);
+    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '-'}`);
     setStepState('step-moderate', 'done', 'Chunk analysis complete');
     setStepState('step-final', 'active', 'Finalizing report…');
   }
   if (phase === 'final_done') {
+    $('#dropzone')?.classList.remove('is-processing');
     setStepState('step-final', 'done', 'Complete');
   }
 }
 
 async function checkHealth() {
-  try {
-    const url = joinUrl(state.apiBase, '/health');
-    const j = await fetchJson(url, { cache: 'no-store' });
-    setStatusPill('ok', `Online • v${j?.version || '—'}`);
-    state.ui.lastHealth = j;
-    state.ui.lastHealthError = null;
-    const version = String(j?.version || '').trim() || '-';
-    setStatusPill('ok', isDevMode() ? `Online (v${version})` : 'Online');
-    const pre = $('#health-json');
-    if (pre && isDevMode()) {
-      const payload = state.ui.lastProviderStatus ? { ...j, provider_status: state.ui.lastProviderStatus } : j;
-      setText(pre, JSON.stringify(payload, null, 2));
+  const candidates = [];
+  const primaryBase = normalizeBaseUrl(state.apiBase || '');
+  if (primaryBase) candidates.push(primaryBase);
+  const originBase = normalizeBaseUrl(window.location.origin || '');
+  if (originBase && originBase !== primaryBase) candidates.push(originBase);
+
+  const errors = [];
+  for (const base of candidates) {
+    try {
+      const url = joinUrl(base, '/health');
+      const j = await fetchJson(url, { cache: 'no-store' }, 5000);
+      if (base !== state.apiBase) {
+        state.apiBase = base;
+        localStorage.setItem('apiBase', base);
+        setText($('#api-base-label'), `API: ${state.apiBase}`);
+        logLine(`api_base_recovered: ${base}`);
+      }
+      setStatusPill('ok', `Online v${j?.version || '-'}`);
+      state.ui.lastHealth = j;
+      state.ui.lastHealthError = null;
+      const version = String(j?.version || '').trim() || '-';
+      setStatusPill('ok', isDevMode() ? `Online (v${version})` : 'Online');
+      const pre = $('#health-json');
+      if (pre && isDevMode()) setText(pre, JSON.stringify(j, null, 2));
+      return true;
+    } catch (e) {
+      errors.push(`${base}: ${String(e?.message || e)}`);
     }
-    return true;
-  } catch (e) {
-    setStatusPill('down', 'Offline');
-    state.ui.lastHealth = null;
-    state.ui.lastHealthError = String(e?.message || e);
-    const pre = $('#health-json');
-    if (pre && isDevMode()) setText(pre, state.ui.lastHealthError);
-    return false;
   }
-}
 
-async function checkProviderStatus(silent = true) {
-  try {
-    const mode = normalizeModelMode(state.ui.modelMode);
-    const url = joinUrl(state.apiBase, `/api/provider-status?model_mode=${encodeURIComponent(mode)}`);
-    const j = await fetchJson(url, { cache: 'no-store' });
-    state.ui.lastProviderStatus = j || null;
-
-    const pre = $('#health-json');
-    if (pre && isDevMode() && state.ui.lastHealth) {
-      setText(pre, JSON.stringify({ ...state.ui.lastHealth, provider_status: state.ui.lastProviderStatus }, null, 2));
-    }
-
-    if (!silent) {
-      const provider = String(j?.provider || 'online');
-      if (j?.connected) toast('success', 'Provider reachable', `${provider} is connected`);
-      else toast('error', 'Provider not connected', String(j?.detail || 'connection_failed'));
-      logLine(`provider_status: mode=${j?.mode || mode} provider=${provider} connected=${j?.connected ? 'yes' : 'no'} detail=${j?.detail || '-'}`);
-    }
-    return Boolean(j?.connected);
-  } catch (e) {
-    if (!silent) {
-      toast('error', 'Provider check failed', String(e?.message || e));
-      logLine(`provider_status_failed: ${String(e?.message || e)}`);
-    }
-    return false;
-  }
+  setStatusPill('down', 'Offline');
+  state.ui.lastHealth = null;
+  state.ui.lastHealthError = errors.join(' | ') || 'health_check_failed';
+  const pre = $('#health-json');
+  if (pre && isDevMode()) setText(pre, state.ui.lastHealthError);
+  return false;
 }
 
 function isPdfFile(file) {
@@ -481,44 +424,17 @@ function isPdfFile(file) {
 }
 
 async function deletePdfSession() {
-  const displayId = String(state.manual.sessionId || '').trim();
-  const baseId = String(state.manual.baseSessionId || '').trim();
-  const ids = Array.from(new Set([displayId, baseId].filter(Boolean)));
-
+  const id = String(state.manual.sessionId || '').trim();
+  if (!id) return;
   state.manual.sessionId = null;
-  state.manual.originalName = null;
-  state.manual.baseSessionId = null;
-  state.manual.baseOriginalName = null;
   state.manual.pages = 0;
   state.manual.pageSignals = [];
   state.manual.boxes = [];
-  for (const id of ids) {
-    try {
-      const url = joinUrl(state.apiBase, `/api/pdf/session/${encodeURIComponent(id)}`);
-      await fetchJson(url, { method: 'DELETE' });
-    } catch {
-      // Best-effort; session cleanup is optional.
-    }
-  }
-}
-
-async function clearManualSessionSlot(slot) {
-  const isBase = String(slot || '').toLowerCase() === 'base';
-  const idField = isBase ? 'baseSessionId' : 'sessionId';
-  const keyField = isBase ? 'baseOriginalName' : 'originalName';
-  const otherIdField = isBase ? 'sessionId' : 'baseSessionId';
-  const id = String(state.manual[idField] || '').trim();
-  const otherId = String(state.manual[otherIdField] || '').trim();
-
-  state.manual[idField] = null;
-  state.manual[keyField] = null;
-  if (!id || id === otherId) return;
-
   try {
     const url = joinUrl(state.apiBase, `/api/pdf/session/${encodeURIComponent(id)}`);
     await fetchJson(url, { method: 'DELETE' });
   } catch {
-    // Best-effort cleanup.
+    // Best-effort; session cleanup is optional.
   }
 }
 
@@ -569,83 +485,6 @@ function renderPreviewUi() {
   }
 }
 
-function hasTermsConsentForMode(mode) {
-  const normalized = normalizeModelMode(mode);
-  if (!state.terms.accepted) return false;
-  if (normalized === 'online' && !state.terms.onlineAccepted) return false;
-  return true;
-}
-
-function openTermsModal({ online = false } = {}) {
-  const modal = $('#tos-modal');
-  if (!modal) return;
-  state.terms.requiresOnline = Boolean(online);
-  const note = $('#tos-mode-note');
-  if (note) {
-    note.textContent = online
-      ? 'Online mode selected: this run uses public-facing hosted APIs.'
-      : 'You must agree to continue using this demo.';
-  }
-  modal.classList.remove('hidden');
-  modal.setAttribute('aria-hidden', 'false');
-  document.body.classList.add('modal-lock');
-}
-
-function closeTermsModal() {
-  const modal = $('#tos-modal');
-  if (!modal) return;
-  modal.classList.add('hidden');
-  modal.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('modal-lock');
-}
-
-function requireTerms({ online = false, onAccept = null } = {}) {
-  state.terms.onAccept = typeof onAccept === 'function' ? onAccept : null;
-  openTermsModal({ online });
-}
-
-function acceptTerms() {
-  state.terms.accepted = true;
-  if (state.terms.requiresOnline) state.terms.onlineAccepted = true;
-  const cb = state.terms.onAccept;
-  state.terms.onAccept = null;
-  closeTermsModal();
-  if (typeof cb === 'function') cb();
-}
-
-function trackAnalyzeCleanupRef(ref) {
-  const id = String(ref || '').trim();
-  if (!/^ar_[A-Za-z0-9_]+$/.test(id)) return;
-  if (!(state.cleanupRefs instanceof Set)) state.cleanupRefs = new Set();
-  state.cleanupRefs.add(id);
-}
-
-function flushAnalyzeResultCleanup() {
-  const refs = state.cleanupRefs instanceof Set ? Array.from(state.cleanupRefs) : [];
-  if (!refs.length) return;
-  const url = joinUrl(state.apiBase, '/api/delete-analyze-result');
-  const payload = JSON.stringify({ refs });
-  let sent = false;
-  try {
-    if (navigator?.sendBeacon) {
-      const blob = new Blob([payload], { type: 'application/json' });
-      sent = navigator.sendBeacon(url, blob);
-    }
-  } catch { }
-  if (!sent) {
-    try {
-      fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        keepalive: true,
-        cache: 'no-store',
-      }).catch(() => { });
-    } catch { }
-  }
-  if (state.cleanupRefs instanceof Set) state.cleanupRefs.clear();
-}
-
 function openRedactModal() {
   const modal = $('#redact-modal');
   if (!modal) return;
@@ -674,225 +513,7 @@ function setManualPage(pageNo) {
 function setManualPages(total) {
   const n = Math.max(0, Number(total || 0));
   state.manual.pages = n;
-  setText($('#redact-pages'), n ? String(n) : '—');
-}
-
-function normalizeRedactionCandidate(raw) {
-  const kind = String(raw?.kind || '').trim().toLowerCase();
-  if (kind !== 'text' && kind !== 'box') return null;
-  const page = Number(raw?.page || 0) || 0;
-  if (!page) return null;
-  const id = String(raw?.id || '').trim();
-  if (!id) return null;
-  const label = String(raw?.label || raw?.source || kind).trim() || kind;
-  const source = String(raw?.source || 'policy').trim().toLowerCase() || 'policy';
-
-  if (kind === 'box') {
-    const bbox = Array.isArray(raw?.bbox) && raw.bbox.length === 4 ? raw.bbox.map(Number) : null;
-    if (!bbox || bbox.some((v) => !Number.isFinite(v))) return null;
-    return { id, source, kind, page, label, bbox, approved_default: raw?.approved_default !== false };
-  }
-
-  const text = String(raw?.text || '').replace(/\s+/g, ' ').trim();
-  if (!text) return null;
-  return { id, source, kind, page, label, text, approved_default: raw?.approved_default !== false };
-}
-
-function getDecisionMap() {
-  const decisions = state.run?.redactionReview?.decisionsMap;
-  if (decisions && typeof decisions === 'object') return decisions;
-  return {};
-}
-
-function isCandidateApproved(candidate) {
-  const decisions = getDecisionMap();
-  const stored = decisions[String(candidate?.id || '')];
-  if (stored === 'reject') return false;
-  if (stored === 'approve') return true;
-  return candidate?.approved_default !== false;
-}
-
-function getApprovedReviewCandidates() {
-  const review = state.run?.redactionReview;
-  const list = Array.isArray(review?.candidates) ? review.candidates : [];
-  return list.filter((c) => isCandidateApproved(c));
-}
-
-function syncManualAiBoxesFromReview() {
-  state.manual.aiBoxes = getApprovedReviewCandidates()
-    .filter((c) => String(c?.kind || '') === 'box')
-    .map((c) => ({
-      candidate_id: c.id,
-      source: c.source,
-      page: Number(c.page || 0) || 0,
-      bbox: Array.isArray(c.bbox) ? c.bbox.map(Number) : [],
-      label: String(c.label || c.source || 'review'),
-    }))
-    .filter((b) => b.page && Array.isArray(b.bbox) && b.bbox.length === 4 && b.bbox.every((v) => Number.isFinite(v)));
-}
-
-function setCandidateDecision(candidateId, approved) {
-  const review = state.run?.redactionReview;
-  if (!review || !candidateId) return;
-  if (!review.decisionsMap || typeof review.decisionsMap !== 'object') review.decisionsMap = {};
-  review.decisionsMap[String(candidateId)] = approved ? 'approve' : 'reject';
-  syncManualAiBoxesFromReview();
-  renderEvidence();
-  renderManualBoxList();
-  renderManualBoxesOnPage();
-  renderManualTextReviewList();
-  hide($('#btn-download-manual'));
-}
-
-function applyRedactionReview(reviewPayload) {
-  const candidates = (Array.isArray(reviewPayload?.candidates) ? reviewPayload.candidates : [])
-    .map((c) => normalizeRedactionCandidate(c))
-    .filter(Boolean);
-  const decisionsMap = {};
-  for (const c of candidates) decisionsMap[c.id] = c.approved_default === false ? 'reject' : 'approve';
-
-  state.run.redactionReview = {
-    summary: reviewPayload?.summary || { total: candidates.length, approved_default: candidates.length, by_kind: {}, by_source: {} },
-    candidates,
-    decisionsMap,
-  };
-  syncManualAiBoxesFromReview();
-}
-
-function resetReviewDecisionsToDefault() {
-  const review = state.run?.redactionReview;
-  const candidates = Array.isArray(review?.candidates) ? review.candidates : [];
-  if (!review || !candidates.length) return;
-  const defaults = {};
-  for (const c of candidates) defaults[String(c.id)] = c?.approved_default === false ? 'reject' : 'approve';
-  review.decisionsMap = defaults;
-  syncManualAiBoxesFromReview();
-  renderEvidence();
-  renderManualBoxList();
-  renderManualBoxesOnPage();
-  renderManualTextReviewList();
-  hide($('#btn-download-manual'));
-}
-
-function getReviewSummaryCounts() {
-  const review = state.run?.redactionReview;
-  const list = Array.isArray(review?.candidates) ? review.candidates : [];
-  let approved = 0;
-  let rejected = 0;
-  for (const c of list) {
-    if (isCandidateApproved(c)) approved++;
-    else rejected++;
-  }
-  return { total: list.length, approved, rejected };
-}
-
-function getFilteredReviewCandidates() {
-  const review = state.run?.redactionReview;
-  const list = Array.isArray(review?.candidates) ? review.candidates : [];
-  const filter = String(state.run?.reviewFilter || 'all').toLowerCase();
-  if (filter === 'approved') return list.filter((c) => isCandidateApproved(c));
-  if (filter === 'rejected') return list.filter((c) => !isCandidateApproved(c));
-  return list;
-}
-
-function setReviewFilter(filter) {
-  const next = String(filter || 'all').toLowerCase();
-  state.run.reviewFilter = (next === 'approved' || next === 'rejected') ? next : 'all';
-  state.run.reviewPage = 0;
-  renderEvidence();
-}
-
-function shiftReviewPage(delta) {
-  const filtered = getFilteredReviewCandidates();
-  const pages = Math.max(1, Math.ceil(filtered.length / REVIEW_PAGE_SIZE));
-  state.run.reviewPage = clamp((Number(state.run.reviewPage || 0) || 0) + Number(delta || 0), 0, pages - 1);
-  renderEvidence();
-}
-
-function updateEvidenceControls() {
-  const counts = getReviewSummaryCounts();
-  const countsEl = $('#evidence-counts');
-  if (countsEl) countsEl.textContent = `Approved: ${counts.approved} • Rejected: ${counts.rejected} • Total: ${counts.total}`;
-
-  const summaryEl = $('#redact-review-summary');
-  if (summaryEl) summaryEl.textContent = `Approved: ${counts.approved} • Rejected: ${counts.rejected} • Total: ${counts.total}`;
-
-  const filtered = getFilteredReviewCandidates();
-  const pageCount = Math.max(1, Math.ceil(filtered.length / REVIEW_PAGE_SIZE));
-  state.run.reviewPage = clamp(Number(state.run.reviewPage || 0) || 0, 0, pageCount - 1);
-  const pageLabel = $('#evidence-page');
-  if (pageLabel) pageLabel.textContent = `Page ${state.run.reviewPage + 1} / ${pageCount}`;
-
-  const prev = $('#evidence-prev');
-  const next = $('#evidence-next');
-  if (prev) prev.disabled = state.run.reviewPage <= 0;
-  if (next) next.disabled = state.run.reviewPage >= pageCount - 1;
-
-  const f = String(state.run.reviewFilter || 'all');
-  $('#evidence-filter-all')?.classList.toggle('active', f === 'all');
-  $('#evidence-filter-approved')?.classList.toggle('active', f === 'approved');
-  $('#evidence-filter-rejected')?.classList.toggle('active', f === 'rejected');
-}
-
-function renderManualTextReviewList() {
-  const root = $('#redact-text-list');
-  if (!root) return;
-  root.innerHTML = '';
-
-  const review = state.run?.redactionReview;
-  const list = Array.isArray(review?.candidates) ? review.candidates.filter((c) => c.kind === 'text') : [];
-  if (!list.length) {
-    const empty = document.createElement('div');
-    empty.className = 'muted text-sm';
-    empty.textContent = 'No text redaction candidates from analysis.';
-    root.appendChild(empty);
-    return;
-  }
-
-  for (const c of list.slice(0, 80)) {
-    const approved = isCandidateApproved(c);
-    const row = document.createElement('div');
-    row.className = 'evidence-item';
-    row.dataset.approved = approved ? 'true' : 'false';
-
-    const top = document.createElement('div');
-    top.className = 'evidence-top';
-    const left = document.createElement('div');
-    left.className = 'flex items-center gap-2';
-    const t1 = document.createElement('span');
-    t1.className = 'tag';
-    t1.textContent = String(c.label || c.source || 'text');
-    const t2 = document.createElement('span');
-    t2.className = 'tag';
-    t2.textContent = `Page ${Number(c.page || 0) || 1}`;
-    left.appendChild(t1);
-    left.appendChild(t2);
-
-    const actions = document.createElement('div');
-    actions.className = 'decision-actions';
-    const approveBtn = document.createElement('button');
-    approveBtn.type = 'button';
-    approveBtn.className = `decision-btn ${approved ? 'active-approve' : ''}`;
-    approveBtn.textContent = 'Approve';
-    approveBtn.addEventListener('click', () => setCandidateDecision(c.id, true));
-    const rejectBtn = document.createElement('button');
-    rejectBtn.type = 'button';
-    rejectBtn.className = `decision-btn ${approved ? '' : 'active-reject'}`;
-    rejectBtn.textContent = 'Reject';
-    rejectBtn.addEventListener('click', () => setCandidateDecision(c.id, false));
-    actions.appendChild(approveBtn);
-    actions.appendChild(rejectBtn);
-
-    top.appendChild(left);
-    top.appendChild(actions);
-    row.appendChild(top);
-
-    const body = document.createElement('div');
-    body.className = 'mt-3 text-sm text-neutral-300';
-    body.textContent = String(c.text || '').slice(0, 280) || '—';
-    row.appendChild(body);
-    root.appendChild(row);
-  }
+  setText($('#redact-pages'), n ? String(n) : '-');
 }
 
 function renderManualBoxList() {
@@ -900,15 +521,12 @@ function renderManualBoxList() {
   if (!root) return;
   root.innerHTML = '';
 
-  const manualBoxes = Array.isArray(state.manual.boxes) ? state.manual.boxes : [];
-  const aiBoxes = Array.isArray(state.manual.aiBoxes) ? state.manual.aiBoxes : [];
-  const boxes = [...aiBoxes.map((b) => ({ ...b, _from: 'ai' })), ...manualBoxes.map((b) => ({ ...b, _from: 'manual' }))];
+  const boxes = Array.isArray(state.manual.boxes) ? state.manual.boxes : [];
   if (!boxes.length) {
     const empty = document.createElement('div');
     empty.className = 'muted text-sm';
-    empty.textContent = 'No approved boxes yet. Drag on the page to add one manually.';
+    empty.textContent = 'No boxes yet. Drag on the page to add one.';
     root.appendChild(empty);
-    renderManualTextReviewList();
     return;
   }
 
@@ -923,41 +541,29 @@ function renderManualBoxList() {
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = `Page ${Number(b?.page || 0) || 1}`;
-    const src = document.createElement('span');
-    src.className = 'tag';
-    src.textContent = b._from === 'ai' ? `AI:${String(b?.source || 'review')}` : 'manual';
     const txt = document.createElement('span');
     txt.className = 'text-sm muted';
     const bb = Array.isArray(b?.bbox) ? b.bbox : [];
-    txt.textContent = bb.length === 4 ? bb.map((v) => Number(v).toFixed(1)).join(', ') : '—';
+    txt.textContent = bb.length === 4 ? bb.map((v) => Number(v).toFixed(1)).join(', ') : '-';
     if (!isDevMode()) txt.textContent = `Box ${idx + 1}`;
     left.appendChild(tag);
-    left.appendChild(src);
     left.appendChild(txt);
 
+    const rm = document.createElement('button');
+    rm.className = 'btn-tertiary';
+    rm.type = 'button';
+    rm.textContent = 'Remove';
+    rm.addEventListener('click', () => {
+      state.manual.boxes = boxes.filter((_x, i) => i !== idx);
+      renderManualBoxList();
+      renderManualBoxesOnPage();
+    });
+
     top.appendChild(left);
-    if (b._from === 'manual') {
-      const manualIndex = idx - aiBoxes.length;
-      const rm = document.createElement('button');
-      rm.className = 'btn-tertiary';
-      rm.type = 'button';
-      rm.textContent = 'Remove';
-      rm.addEventListener('click', () => {
-        state.manual.boxes = manualBoxes.filter((_x, i) => i !== manualIndex);
-        renderManualBoxList();
-        renderManualBoxesOnPage();
-      });
-      top.appendChild(rm);
-    } else {
-      const badge = document.createElement('span');
-      badge.className = 'tag';
-      badge.textContent = 'approved';
-      top.appendChild(badge);
-    }
+    top.appendChild(rm);
     row.appendChild(top);
     root.appendChild(row);
   }
-  renderManualTextReviewList();
 }
 
 function renderManualBoxesOnPage() {
@@ -971,12 +577,7 @@ function renderManualBoxesOnPage() {
   const pageH = Number(sig?.height || 0) || 0;
   if (!pageW || !pageH) return;
 
-  const manualBoxes = Array.isArray(state.manual.boxes) ? state.manual.boxes : [];
-  const aiBoxes = Array.isArray(state.manual.aiBoxes) ? state.manual.aiBoxes : [];
-  const boxes = [
-    ...aiBoxes.map((b) => ({ ...b, _from: 'ai' })),
-    ...manualBoxes.map((b) => ({ ...b, _from: 'manual' })),
-  ].filter((b) => Number(b?.page || 0) === state.manual.currentPage);
+  const boxes = (Array.isArray(state.manual.boxes) ? state.manual.boxes : []).filter((b) => Number(b?.page || 0) === state.manual.currentPage);
   if (!boxes.length) return;
 
   // Use rendered element size for mapping, so overlays stay aligned on resize.
@@ -993,7 +594,7 @@ function renderManualBoxesOnPage() {
     const height = (Math.abs(y1 - y0) / pageH) * h;
 
     const div = document.createElement('div');
-    div.className = `redact-box ${b._from === 'ai' ? 'redact-box-ai' : 'redact-box-manual'}`;
+    div.className = 'redact-box';
     div.style.left = `${left}px`;
     div.style.top = `${top}px`;
     div.style.width = `${Math.max(2, width)}px`;
@@ -1001,7 +602,7 @@ function renderManualBoxesOnPage() {
     if (isDevMode()) {
       const badge = document.createElement('div');
       badge.className = 'redact-badge';
-      badge.textContent = b._from === 'ai' ? `AI ${idx + 1}` : String(idx + 1);
+      badge.textContent = String(idx + 1);
       div.appendChild(badge);
     }
     layer.appendChild(div);
@@ -1015,62 +616,11 @@ async function createPdfSession() {
   const key = `${state.file.name}:${state.file.size}`;
   if (state.manual.sessionId && state.manual.originalName === key) return state.manual.sessionId;
 
-  // Cleanup old display session if any.
-  await clearManualSessionSlot('display');
+  // Cleanup old session if any.
+  await deletePdfSession();
 
   const form = new FormData();
   form.append('file', state.file);
-  const url = joinUrl(state.apiBase, '/api/pdf/session');
-  const res = await fetchJson(url, { method: 'POST', body: form });
-  if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
-
-  state.manual.sessionId = String(res.id);
-  state.manual.originalName = key;
-  state.manual.pageSignals = Array.isArray(res?.page_signals) ? res.page_signals : [];
-  setManualPages(Number(res?.pages || 0) || 0);
-  return state.manual.sessionId;
-}
-
-async function createBasePdfSession() {
-  if (!state.file || !isPdfFile(state.file)) throw new Error('pdf_required');
-  const key = `${state.file.name}:${state.file.size}`;
-  if (state.manual.baseSessionId && state.manual.baseOriginalName === key) return state.manual.baseSessionId;
-
-  if (state.manual.sessionId && state.manual.originalName === key) {
-    state.manual.baseSessionId = state.manual.sessionId;
-    state.manual.baseOriginalName = key;
-    return state.manual.baseSessionId;
-  }
-
-  await clearManualSessionSlot('base');
-
-  const form = new FormData();
-  form.append('file', state.file);
-  const url = joinUrl(state.apiBase, '/api/pdf/session');
-  const res = await fetchJson(url, { method: 'POST', body: form });
-  if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
-
-  state.manual.baseSessionId = String(res.id);
-  state.manual.baseOriginalName = key;
-  return state.manual.baseSessionId;
-}
-
-async function createReviewDisplayPdfSession() {
-  const rel = String(state.run?.redactedPdf?.url || '').trim();
-  if (!rel) throw new Error('No generated redacted PDF available yet');
-  const key = `redacted:${rel}`;
-  if (state.manual.sessionId && state.manual.originalName === key) return state.manual.sessionId;
-
-  await clearManualSessionSlot('display');
-
-  const pdfUrl = joinUrl(state.apiBase, rel);
-  const pdfRes = await fetch(pdfUrl, { cache: 'no-store' });
-  if (!pdfRes.ok) throw new Error(`redacted_fetch_http_${pdfRes.status}`);
-  const pdfBlob = await pdfRes.blob();
-  if (!pdfBlob || !Number(pdfBlob.size || 0)) throw new Error('redacted_fetch_empty');
-
-  const form = new FormData();
-  form.append('file', pdfBlob, 'review-redacted.pdf');
   const url = joinUrl(state.apiBase, '/api/pdf/session');
   const res = await fetchJson(url, { method: 'POST', body: form });
   if (!res?.ok || !res?.id) throw new Error(res?.error || 'session_failed');
@@ -1193,55 +743,26 @@ function finishManualDrawing() {
   state.manual.boxes.push({ page: state.manual.currentPage, bbox: [x0, y0, x1, y1], label: 'manual' });
   renderManualBoxList();
   renderManualBoxesOnPage();
-  hide($('#btn-download-manual'));
 }
 
 async function generateManualRedaction() {
-  const id = String(state.manual.baseSessionId || state.manual.sessionId || '').trim();
+  const id = String(state.manual.sessionId || '').trim();
   if (!id) return toast('error', 'No session', 'Open manual redaction after selecting a PDF');
-
-  const review = state.run?.redactionReview;
-  const hasReview = Boolean(review && Array.isArray(review?.candidates) && review.candidates.length);
-  const approved = hasReview ? getApprovedReviewCandidates() : [];
-  const approvedBoxes = approved
-    .filter((c) => c.kind === 'box')
-    .map((c) => ({ page: c.page, bbox: c.bbox, label: c.label || c.source || 'review', candidate_id: c.id }));
-  const approvedTexts = approved
-    .filter((c) => c.kind === 'text')
-    .map((c) => ({ page: c.page, text: c.text, label: c.label || c.source || 'review', candidate_id: c.id }));
-  const dedupeKey = (b) => `${Number(b?.page || 0)}|${Array.isArray(b?.bbox) ? b.bbox.map((v) => Number(v).toFixed(3)).join(',') : ''}|${String(b?.label || '').toLowerCase()}`;
-  const mergedBoxes = [];
-  const seenBox = new Set();
-  for (const b of [...approvedBoxes, ...(Array.isArray(state.manual.boxes) ? state.manual.boxes : [])]) {
-    const key = dedupeKey(b);
-    if (!key || seenBox.has(key)) continue;
-    seenBox.add(key);
-    mergedBoxes.push(b);
-  }
 
   const btn = $('#btn-generate-manual');
   btn && (btn.disabled = true);
   hide($('#btn-download-manual'));
   try {
     const url = joinUrl(state.apiBase, '/api/pdf/redact');
-    const payload = hasReview
-      ? {
-        id,
-        boxes: mergedBoxes,
-        search_texts: approvedTexts,
-        detect_pii: false,
-        include_rules: false,
-      }
-      : {
+    const res = await fetchJson(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         id,
         boxes: state.manual.boxes,
         detect_pii: true,
         include_rules: true,
-      };
-    const res = await fetchJson(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      }),
     });
     if (!res?.ok || !res?.redacted_pdf?.url) throw new Error(res?.error || 'redact_failed');
 
@@ -1251,9 +772,7 @@ async function generateManualRedaction() {
       dl.download = '';
       show(dl);
     }
-    const appliedBoxes = Number(res?.applied?.boxes_applied || 0) || 0;
-    const appliedTexts = Number(res?.applied?.search_texts_applied || 0) || 0;
-    toast('success', 'Redacted PDF ready', hasReview ? `Applied ${appliedBoxes} boxes + ${appliedTexts} text redactions` : 'Download manual redaction');
+    toast('success', 'Redacted PDF ready', 'Download manual redaction');
   } catch (e) {
     toast('error', 'Manual redaction failed', String(e?.message || e));
   } finally {
@@ -1386,29 +905,22 @@ async function saveRule() {
   }
 }
 
-function renderEvidence() {
+function renderEvidence(citations) {
   const root = $('#evidence-list');
   if (!root) return;
   root.innerHTML = '';
-  const list = getFilteredReviewCandidates();
-  updateEvidenceControls();
+  const list = Array.isArray(citations) ? citations : [];
   if (!list.length) {
     const empty = document.createElement('div');
     empty.className = 'muted text-sm';
-    empty.textContent = 'No redaction review candidates.';
+    empty.textContent = 'No citations provided.';
     root.appendChild(empty);
     return;
   }
 
-  const page = Number(state.run.reviewPage || 0) || 0;
-  const start = page * REVIEW_PAGE_SIZE;
-  const view = list.slice(start, start + REVIEW_PAGE_SIZE);
-
-  for (const c of view) {
-    const approved = isCandidateApproved(c);
+  for (const c of list.slice(0, 12)) {
     const card = document.createElement('div');
     card.className = 'evidence-item';
-    card.dataset.approved = approved ? 'true' : 'false';
 
     const top = document.createElement('div');
     top.className = 'evidence-top';
@@ -1417,44 +929,42 @@ function renderEvidence() {
     left.className = 'flex items-center gap-2';
     const tag = document.createElement('span');
     tag.className = 'tag';
-    tag.textContent = String(c?.label || c?.type || c?.source || 'evidence');
+    tag.textContent = String(c?.type || 'evidence');
     const page = document.createElement('span');
     page.className = 'tag';
     page.textContent = `Page ${Number(c?.page || 0) || 1}`;
-    const source = document.createElement('span');
-    source.className = 'tag';
-    source.textContent = String(c?.source || 'policy');
     left.appendChild(tag);
     left.appendChild(page);
-    left.appendChild(source);
 
-    const actions = document.createElement('div');
-    actions.className = 'decision-actions';
-    const approveBtn = document.createElement('button');
-    approveBtn.className = `decision-btn ${approved ? 'active-approve' : ''}`;
-    approveBtn.type = 'button';
-    approveBtn.textContent = 'Approve';
-    approveBtn.addEventListener('click', () => setCandidateDecision(c.id, true));
-    const rejectBtn = document.createElement('button');
-    rejectBtn.className = `decision-btn ${approved ? '' : 'active-reject'}`;
-    rejectBtn.type = 'button';
-    rejectBtn.textContent = 'Reject';
-    rejectBtn.addEventListener('click', () => setCandidateDecision(c.id, false));
-    actions.appendChild(approveBtn);
-    actions.appendChild(rejectBtn);
+    const btn = document.createElement('button');
+    btn.className = 'btn-tertiary';
+    btn.type = 'button';
+    btn.textContent = 'Remember redaction';
+    btn.addEventListener('click', () => {
+      openRulesDrawer();
+      const textEl = $('#rule-text');
+      const labelEl = $('#rule-label');
+      if (textEl) textEl.value = String(c?.text || '').trim();
+      if (labelEl) {
+        const t = String(c?.type || '').toLowerCase();
+        const suggest = t.includes('ssn') ? 'ssn'
+          : t.includes('address') ? 'address'
+            : t.includes('phone') ? 'phone'
+              : t.includes('email') ? 'email'
+                : t.includes('name') ? 'name'
+                  : 'custom';
+        labelEl.value = suggest;
+      }
+      void loadRules();
+    });
 
     top.appendChild(left);
-    top.appendChild(actions);
+    top.appendChild(btn);
     card.appendChild(top);
 
     const body = document.createElement('div');
     body.className = 'mt-3 text-sm text-neutral-300';
-    if (String(c?.kind || '').toLowerCase() === 'box') {
-      const bb = Array.isArray(c?.bbox) ? c.bbox : [];
-      body.textContent = bb.length === 4 ? `Box: ${bb.map((v) => Number(v).toFixed(2)).join(', ')}` : 'Box candidate';
-    } else {
-      body.textContent = String(c?.text || '').slice(0, 260) || '—';
-    }
+    body.textContent = String(c?.text || '').slice(0, 260) || '-';
     card.appendChild(body);
     root.appendChild(card);
   }
@@ -1467,39 +977,19 @@ function renderFinalReport(data) {
   state.run.policy = data?.policy || state.run.policy;
   state.run.final = data?.final || state.run.final;
   state.run.redactedPdf = data?.redacted_pdf || null;
-  trackAnalyzeCleanupRef(data?.analyze_cleanup_ref);
-  if (data?.redaction_review) {
-    applyRedactionReview(data.redaction_review);
-  } else {
-    const fallback = (Array.isArray(data?.policy?.citations) ? data.policy.citations : []).map((c, i) => ({
-      id: `legacy_${i}_${Number(c?.page || 1)}`,
-      source: 'policy',
-      kind: 'text',
-      page: Number(c?.page || 0) || 1,
-      label: String(c?.type || 'policy'),
-      text: String(c?.text || '').trim(),
-      approved_default: true,
-    })).filter((c) => c.text);
-    state.run.redactionReview = {
-      summary: { total: fallback.length, approved_default: fallback.length, by_kind: { text: fallback.length }, by_source: { policy: fallback.length } },
-      candidates: fallback,
-      decisionsMap: Object.fromEntries(fallback.map((c) => [c.id, 'approve'])),
-    };
-    syncManualAiBoxesFromReview();
-  }
 
   updateMiniStats();
   updateHeroKpis();
 
   const policy = state.run.policy || {};
-  const overall = policy.overall || policy.sensitivity || state.run.final?.label || data?.local?.label || '—';
-  const rationale = policy.rationale || state.run.final?.reason || '—';
+  const overall = policy.overall || policy.sensitivity || state.run.final?.label || data?.local?.label || '-';
+  const rationale = policy.rationale || state.run.final?.reason || '-';
   setText($('#kpi-overall'), overall);
   setText($('#kpi-overall-sub'), rationale);
   setText($('#report-subtitle'), `${String(data?.document_path || 'document')} • ${overall}`);
 
-  setText($('#kpi-pages'), String(state.run.meta?.pages ?? '—'));
-  setText($('#kpi-images'), String(state.run.meta?.images ?? '—'));
+  setText($('#kpi-pages'), String(state.run.meta?.pages ?? '-'));
+  setText($('#kpi-images'), String(state.run.meta?.images ?? '-'));
 
   const piiTotal = Number(data?.pii?.summary?.total ?? data?.pii?.items?.length ?? 0) || 0;
   setText($('#kpi-pii-total'), String(piiTotal));
@@ -1515,8 +1005,7 @@ function renderFinalReport(data) {
   setText($('#kpi-guardian'), String(gFlags.length));
   setText($('#kpi-guardian-sub'), data?.guardian?.unsafe ? 'Unsafe flagged' : 'No unsafe flags');
 
-  renderEvidence();
-  renderManualTextReviewList();
+  renderEvidence(Array.isArray(policy.citations) ? policy.citations : []);
   renderChips($('#safety-concerns'), Array.isArray(data?.safety?.categories) ? data.safety.categories : [], 'No safety concerns detected.');
   renderChips($('#guardian-flags'), gFlags, 'No guardian flags.');
 
@@ -1536,8 +1025,229 @@ function renderFinalReport(data) {
     setText($('#audit-json'), '');
   }
 
+  // WOW Visualizations
+  renderWowVisualizations(data);
+
+}
+
+function renderWowVisualizations(data) {
+  const normalizePiiItem = (item) => {
+    const type = String(item?.type || item?.entity_type || item?.label || 'Unknown').trim() || 'Unknown';
+    const value = String(item?.value || item?.snippet || item?.mention_text || item?.content || '').trim();
+    const page = Number(item?.page || item?.page_number || item?.pageNo || 0) || 0;
+    const confidenceRaw = item?.score ?? item?.confidence ?? null;
+    const confidence = Number.isFinite(Number(confidenceRaw)) ? Number(confidenceRaw) : null;
+    const bbox = Array.isArray(item?.bbox)
+      ? item.bbox
+      : (Array.isArray(item?.polygon)
+        ? item.polygon
+        : (Array.isArray(item?.bounding_box)
+          ? item.bounding_box
+          : (item?.bounding_regions?.[0]?.polygon || item?.bounding_regions?.polygon || null)));
+    return { raw: item, type, value, page, confidence, bbox };
+  };
+
+  const piiItems = (Array.isArray(data?.pii?.items) ? data.pii.items : []).map(normalizePiiItem);
+  const highRiskTokens = ['address', 'phone', 'name', 'ssn', 'social', 'credit', 'bank', 'passport', 'financial', 'email'];
+  let riskScore = 0;
+  let highRiskCount = 0;
+  let otherRiskCount = 0;
+
+  for (const item of piiItems) {
+    const type = item.type.toLowerCase();
+    const isHighRisk = highRiskTokens.some((token) => type.includes(token));
+    if (isHighRisk) highRiskCount++;
+    else otherRiskCount++;
+  }
+
+  if (highRiskCount > 0) {
+    riskScore = 60 + (highRiskCount * 2) + otherRiskCount;
+  } else if (otherRiskCount > 0) {
+    riskScore = otherRiskCount * 3;
+  }
+  if (Array.isArray(data?.safety?.categories) && data.safety.categories.length > 0) riskScore += 20;
+  riskScore = Math.min(100, riskScore);
+
+  const elRiskVal = document.getElementById('risk-score-value');
+  const elRiskLabel = document.getElementById('risk-score-label');
+  const elRiskActive = document.getElementById('risk-gauge-active');
+  const elGlow = document.getElementById('risk-bg-glow');
+  if (elRiskVal) elRiskVal.textContent = String(Math.floor(riskScore));
+
+  let riskLevel = 'Low Risk';
+  let riskColor = 'emerald';
+  if (riskScore > 40 && riskScore <= 70) {
+    riskLevel = 'Medium Risk';
+    riskColor = 'amber';
+  } else if (riskScore > 70) {
+    riskLevel = 'High Risk';
+    riskColor = 'red';
+  }
+
+  if (elRiskLabel) {
+    elRiskLabel.textContent = riskLevel;
+    elRiskLabel.className = `text-[0.65rem] font-medium uppercase tracking-widest text-${riskColor}-400`;
+  }
+  if (elRiskActive) {
+    elRiskActive.style.transform = `rotate(${45 + (180 * riskScore / 100)}deg)`;
+    const rColorsMap = { emerald: '16,185,129', amber: '245,158,11', red: '239,68,68' };
+    elRiskActive.className = `absolute top-0 left-0 w-48 h-48 rounded-full border-[1.5rem] border-${riskColor}-500 border-t-transparent border-r-transparent transition-transform duration-1000 ease-out shadow-[0_0_15px_rgba(${rColorsMap[riskColor]},0.5)]`;
+  }
+  if (elGlow) {
+    elGlow.className = `absolute inset-0 bg-gradient-to-b from-${riskColor}-500/5 to-transparent pointer-events-none transition-colors`;
+  }
+
+  const elHeatmap = document.getElementById('heatmap-grid');
+  if (elHeatmap) {
+    elHeatmap.innerHTML = '';
+    const pages = Number(data?.meta?.pages || 0) || 1;
+    for (let page = 1; page <= Math.max(1, pages); page++) {
+      const piiOnPage = piiItems.filter((item) => item.page === page).length;
+      let opacity = 0.1;
+      if (piiOnPage > 0) opacity = Math.min(1, 0.2 + (piiOnPage * 0.15));
+      const box = document.createElement('div');
+      box.className = 'w-8 h-8 rounded shrink-0 flex items-center justify-center text-[10px] font-medium';
+      box.style.backgroundColor = `rgba(99, 102, 241, ${opacity})`;
+      box.style.border = `1px solid rgba(99, 102, 241, ${opacity > 0.1 ? opacity + 0.2 : 0.2})`;
+      if (piiOnPage > 3) box.style.boxShadow = '0 0 8px rgba(99,102,241,0.6)';
+      box.textContent = String(page);
+      box.title = `Page ${page}: ${piiOnPage} PII item(s)`;
+      elHeatmap.appendChild(box);
+    }
+  }
+
+  const elEvidTable = document.getElementById('interactive-evidence-table');
+  const elFilterType = document.getElementById('filter-pii-type');
+  if (elEvidTable && piiItems.length > 0) {
+    const types = new Set(piiItems.map((item) => item.type.toLowerCase()));
+    if (elFilterType) {
+      elFilterType.innerHTML = '<option value="all">All Types</option>';
+      Array.from(types).sort().forEach((type) => {
+        const opt = document.createElement('option');
+        opt.value = type;
+        opt.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+        elFilterType.appendChild(opt);
+      });
+      const newFilterType = elFilterType.cloneNode(true);
+      elFilterType.parentNode.replaceChild(newFilterType, elFilterType);
+      newFilterType.addEventListener('change', (e) => {
+        renderTable(String(e?.target?.value || 'all'));
+      });
+    }
+
+    const renderTable = (filterType) => {
+      elEvidTable.innerHTML = '';
+      const filtered = filterType === 'all'
+        ? piiItems
+        : piiItems.filter((item) => item.type.toLowerCase() === filterType);
+      if (!filtered.length) {
+        elEvidTable.innerHTML = '<tr><td colspan="4" class="px-5 py-8 text-center text-neutral-500">No findings match this filter.</td></tr>';
+        return;
+      }
+
+      for (const item of filtered) {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-white/[0.02] cursor-pointer transition-colors border-t border-white/[0.04] group';
+        const eType = item.type;
+        const snippet = item.value.slice(0, 100);
+        const conf = Number.isFinite(item.confidence) ? `${Math.round(item.confidence * 100)}%` : '-';
+        const page = item.page || '-';
+        const isHighRisk = highRiskTokens.some((token) => eType.toLowerCase().includes(token));
+        const badgeColor = isHighRisk ? 'red' : 'amber';
+
+        tr.innerHTML = `
+          <td class="px-5 py-3">
+            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-${badgeColor}-500/10 border border-${badgeColor}-500/20 text-${badgeColor}-400 text-xs font-medium">
+              ${eType}
+            </span>
+          </td>
+          <td class="px-5 py-3 font-mono text-xs text-neutral-300 truncate max-w-xs group-hover:text-white transition-colors" title="${item.value.replace(/"/g, '&quot;')}">
+            ${snippet || '<span class="italic text-neutral-600">No snippet provided</span>'}
+          </td>
+          <td class="px-5 py-3 text-neutral-400">${conf}</td>
+          <td class="px-5 py-3 text-right text-neutral-500">Pg ${page}</td>
+        `;
+
+        tr.addEventListener('mouseenter', () => {
+          if (typeof setManualPage === 'function' && Number(page) > 0) {
+            setManualPage(Number(page));
+          }
+          if (item.bbox) {
+            renderManualBoxesOnPageWithTemp(item.bbox, page);
+          } else if (typeof renderManualBoxesOnPage === 'function') {
+            renderManualBoxesOnPage();
+          }
+        });
+
+        tr.addEventListener('click', () => {
+          try {
+            openRulesDrawer();
+            const textEl = document.getElementById('rule-text');
+            const labelEl = document.getElementById('rule-label');
+            if (textEl) textEl.value = item.value;
+            if (labelEl) labelEl.value = eType.toLowerCase().substring(0, 25);
+            if (typeof loadRules === 'function') void loadRules();
+          } catch { }
+        });
+
+        elEvidTable.appendChild(tr);
+      }
+    };
+
+    renderTable('all');
+  }
+
+  function renderManualBoxesOnPageWithTemp(bboxRaw, pageNo) {
+    if (typeof renderManualBoxesOnPage === 'function') {
+      renderManualBoxesOnPage(); // reset previous
+
+      const layer = document.getElementById('redact-box-layer');
+      const img = document.getElementById('redact-img');
+      const sig = typeof pageSignalFor === 'function' ? pageSignalFor(pageNo || state.manual.currentPage) : null;
+      if (!layer || !img || !sig) return;
+
+      const pageW = Number(sig?.width || 0) || 0;
+      const pageH = Number(sig?.height || 0) || 0;
+      if (!pageW || !pageH) return;
+
+      const bb = Array.isArray(bboxRaw) ? bboxRaw : (bboxRaw?.[0]?.polygon || bboxRaw?.polygon || null);
+      if (!bb || bb.length !== 8) return;
+
+      const rect = img.getBoundingClientRect();
+      const w = rect.width || 1;
+      const h = rect.height || 1;
+
+      // Extract bounding box from polygon
+      const xs = [bb[0], bb[2], bb[4], bb[6]];
+      const ys = [bb[1], bb[3], bb[5], bb[7]];
+      const x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const y0 = Math.min(...ys), y1 = Math.max(...ys);
+
+      const left = (x0 / pageW) * w;
+      const top = (y0 / pageH) * h;
+      const width = ((x1 - x0) / pageW) * w;
+      const height = ((y1 - y0) / pageH) * h;
+
+      const div = document.createElement('div');
+      div.className = 'absolute border-2 border-indigo-400 bg-indigo-500/20 animate-pulse z-20 pointer-events-none rounded transition-all';
+      div.style.left = `${left}px`;
+      div.style.top = `${top}px`;
+      div.style.width = `${Math.max(2, width)}px`;
+      div.style.height = `${Math.max(2, height)}px`;
+      div.style.boxShadow = '0 0 15px rgba(99,102,241,0.5)';
+      layer.appendChild(div);
+    }
+  }
   show($('#report'));
   setPhase('final_done');
+
+  // Celebration effect
+  const reportEl = $('#report');
+  if (reportEl) {
+    reportEl.classList.remove('report-celebration');
+    void reportEl.offsetWidth; // Trigger reflow to restart animation
+    reportEl.classList.add('report-celebration');
+  }
 }
 
 function bumpFlagCounts(flags) {
@@ -1562,7 +1272,7 @@ function handleSseEvent(eventName, payload) {
       const phase = String(payload?.phase || '');
       if (phase) {
         setPhase(phase);
-        logLine(`phase=${phase}`);
+        logLine(`phase = ${phase} `);
       }
       break;
     }
@@ -1570,43 +1280,40 @@ function handleSseEvent(eventName, payload) {
       const meta = payload?.meta || {};
       state.run.meta = meta;
       setText($('#step-extract-sub'), 'Extraction complete');
-      setText($('#mini-pages'), String(meta?.pages ?? '—'));
-      setText($('#hero-kpi-pages'), String(meta?.pages ?? '—'));
-      setText($('#hero-kpi-images'), String(meta?.images ?? '—'));
-      logLine(`extract: pages=${meta?.pages ?? '—'} images=${meta?.images ?? '—'}`);
-      const status = Array.isArray(payload?.status) ? payload.status : [];
-      const cap = status.find((s) => String(s?.phase || '') === 'azure_di_page_cap_notice');
-      if (cap?.detail) logLine(`azure_notice: ${String(cap.detail)}`);
+      setText($('#mini-pages'), String(meta?.pages ?? '-'));
+      setText($('#hero-kpi-pages'), String(meta?.pages ?? '-'));
+      setText($('#hero-kpi-images'), String(meta?.images ?? '-'));
+      logLine(`extract: pages = ${meta?.pages ?? '-'} images = ${meta?.images ?? '-'} `);
       break;
     }
     case 'precheck': {
       const pages = Number(payload?.pages || 0) || 0;
       const images = Number(payload?.images || 0) || 0;
-      setText($('#mini-pages'), pages ? String(pages) : '—');
-      setText($('#hero-kpi-pages'), pages ? String(pages) : '—');
+      setText($('#mini-pages'), pages ? String(pages) : '-');
+      setText($('#hero-kpi-pages'), pages ? String(pages) : '-');
       setText($('#hero-kpi-images'), String(images));
-      logLine(`precheck: pages=${pages} images=${images} scanned=${payload?.legibility?.isLikelyScanned ? 'yes' : 'no'}`);
+      logLine(`precheck: pages = ${pages} images = ${images} scanned = ${payload?.legibility?.isLikelyScanned ? 'yes' : 'no'} `);
       break;
     }
     case 'chunk_index': {
       const total = Number(payload?.total || 0) || 0;
       state.run.chunksTotal = total;
-      setText($('#step-chunk-sub'), `Chunks: ${total || '—'}`);
+      setText($('#step-chunk-sub'), `Chunks: ${total || '-'} `);
       setProgress(0, total);
-      logLine(`chunk_index: total=${total}`);
+      logLine(`chunk_index: total = ${total} `);
       break;
     }
     case 'chunk': {
       if (state.run.phase !== 'chunk_processing') setPhase('chunk_processing');
       const id = payload?.id;
       const page = payload?.page;
-      setText($('#step-moderate-sub'), `Processing chunk ${id ?? '—'} (page ${page ?? '—'})`);
+      setText($('#step-moderate-sub'), `Processing chunk ${id ?? '-'} (page ${page ?? '-'})`);
       break;
     }
     case 'moderation': {
       bumpFlagCounts(payload?.flags);
       updateMiniStats();
-      logLine(`moderation: flags=${(payload?.flags || []).length} unsafe=${payload?.unsafe ? 'yes' : 'no'}`);
+      logLine(`moderation: flags = ${(payload?.flags || []).length} unsafe = ${payload?.unsafe ? 'yes' : 'no'} `);
       break;
     }
     case 'chunk_pii': {
@@ -1615,7 +1322,7 @@ function handleSseEvent(eventName, payload) {
       bumpPiiCounts(payload?.types);
       updateMiniStats();
       updateHeroKpis();
-      logLine(`pii: +${count} types=${(payload?.types || []).join(', ') || '—'}`);
+      logLine(`pii: +${count} types = ${(payload?.types || []).join(', ') || '-'} `);
       break;
     }
     case 'progress': {
@@ -1630,6 +1337,19 @@ function handleSseEvent(eventName, payload) {
     case 'guardian': {
       state.run.guardian = payload;
       logLine(`guardian: flags=${(payload?.flags || []).length} unsafe=${payload?.unsafe ? 'yes' : 'no'}`);
+      break;
+    }
+    case 'warning': {
+      const code = String(payload?.code || '');
+      if (code === 'gemini_rate_limited') {
+        if (!state.run.geminiRateLimitSeen) {
+          state.run.geminiRateLimitSeen = true;
+          toast('error', 'Gemini API rate limited', String(payload?.message || 'Using partial fallback for this run.'));
+        }
+        logLine(`warning: ${code}`);
+      } else {
+        logLine(`warning: ${code || 'unknown'}`);
+      }
       break;
     }
     case 'final': {
@@ -1697,17 +1417,11 @@ async function startAnalysis() {
 
   const noImages = Boolean($('#no-images')?.checked);
   const temp = Number($('#temperature')?.value ?? 0) || 0;
-  const modelMode = normalizeModelMode(state.ui.modelMode);
-  if (!hasTermsConsentForMode(modelMode)) {
-    requireTerms({ online: modelMode === 'online' });
-    toast('error', 'Terms required', 'You must agree to the terms before using this demo.');
-    return;
-  }
   setText($('#hero-kpi-mode'), noImages ? 'Text-only' : 'Hybrid');
 
   resetRunUi();
   logLine(`upload: ${file.name} (${bytesToHuman(file.size)})`);
-  logLine(`settings: no_images=${noImages ? 'true' : 'false'} temperature=${temp.toFixed(2)} model_mode=${modelMode}`);
+  logLine(`settings: no_images=${noImages ? 'true' : 'false'} temperature=${temp.toFixed(2)}`);
 
   const btn = $('#btn-analyze');
   btn && (btn.disabled = true);
@@ -1717,18 +1431,11 @@ async function startAnalysis() {
     if (!ok) {
       toast('error', 'Backend offline', `Cannot reach ${state.apiBase}`);
     }
-    if (modelMode === 'online') {
-      const connected = await checkProviderStatus(true);
-      if (!connected) {
-        toast('error', 'Online provider not connected', 'Open Developer Mode and click Check Provider.');
-      }
-    }
 
     const form = new FormData();
     form.append('file', file);
     form.append('no_images', String(noImages));
     form.append('temperature', String(temp));
-    form.append('model_mode', modelMode);
 
     setPhase('extract_start');
 
@@ -1740,11 +1447,6 @@ async function startAnalysis() {
     }
     toast('success', 'Streaming started', 'Processing document…');
     await readSseStream(res.body, handleSseEvent);
-    if (!state.run.final && state.run.phase !== 'final_done') {
-      logLine('stream_closed_before_final');
-      toast('error', 'Analysis incomplete', 'Stream closed before final report. Check API/docling logs.');
-      setPhase('final_done');
-    }
   } catch (e) {
     toast('error', 'Request failed', String(e?.message || e));
     logLine(`request_failed: ${String(e?.message || e)}`);
@@ -1758,9 +1460,6 @@ function setFile(file) {
   destroyPreviewUrl();
   state.previewOpen = false;
   void deletePdfSession();
-  state.manual.boxes = [];
-  state.manual.aiBoxes = [];
-  state.run.redactionReview = null;
 
   state.file = file || null;
   const row = $('#file-row');
@@ -1768,8 +1467,8 @@ function setFile(file) {
   const size = $('#file-size');
   if (!file) {
     hide(row);
-    setText(name, '—');
-    setText(size, '—');
+    setText(name, '-');
+    setText(size, '-');
     renderPreviewUi();
     return;
   }
@@ -1788,11 +1487,34 @@ function wireUi() {
   $('#btn-toggle-mode')?.addEventListener('click', toggleUiMode);
   applyUiMode();
 
+  // Install Tab Listeners
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  const tabPanels = document.querySelectorAll('.tab-panel');
+  if (tabBtns.length) {
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabBtns.forEach(b => {
+          b.classList.remove('active');
+          if (b.classList.contains('text-indigo-400')) {
+            b.classList.remove('text-indigo-400', 'border-indigo-500');
+          }
+        });
+        tabPanels.forEach(p => p.classList.add('hidden'));
+
+        btn.classList.add('active');
+        btn.classList.add('text-indigo-400', 'border-indigo-500');
+
+        const targetId = btn.getAttribute('data-target');
+        const targetPanel = document.getElementById(targetId);
+        if (targetPanel) {
+          targetPanel.classList.remove('hidden');
+        }
+      });
+    });
+  }
+
   // Health
   setInterval(checkHealth, 6000);
-  if (state.ui.modelMode === 'online') {
-    void checkProviderStatus(true);
-  }
 
   // Hero CTA scroll
   $('#btn-cta-start')?.addEventListener('click', () => {
@@ -1806,40 +1528,10 @@ function wireUi() {
   temp?.addEventListener('input', updateTemp);
   updateTemp();
 
-  const modelMode = $('#model-mode');
-  if (modelMode) {
-    modelMode.value = state.ui.modelMode;
-    modelMode.addEventListener('change', () => {
-      const nextMode = normalizeModelMode(modelMode.value);
-      const applyMode = () => {
-        setModelMode(nextMode);
-        toast('success', 'Model mode updated', state.ui.modelMode === 'local' ? 'Local/Offline mode selected' : 'Online API mode selected');
-        if (state.ui.modelMode === 'online') {
-          void checkProviderStatus(true);
-        }
-      };
-      if (!hasTermsConsentForMode(nextMode)) {
-        modelMode.value = state.ui.modelMode;
-        requireTerms({ online: nextMode === 'online', onAccept: applyMode });
-        return;
-      }
-      applyMode();
-    });
-  }
-
-  $('#btn-check-provider')?.addEventListener('click', () => void checkProviderStatus(false));
-  $('#btn-tos-agree')?.addEventListener('click', acceptTerms);
-
   // Dropzone / file selection
   const drop = $('#dropzone');
   const input = $('#file-input');
-  const pick = () => {
-    if (!hasTermsConsentForMode(state.ui.modelMode)) {
-      requireTerms({ online: state.ui.modelMode === 'online' });
-      return;
-    }
-    input?.click();
-  };
+  const pick = () => input?.click();
   drop?.addEventListener('click', pick);
   drop?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
@@ -1905,47 +1597,25 @@ function wireUi() {
   });
 
   // Manual redaction modal
-  const openManual = async ({ fromReport = false } = {}) => {
+  const openManual = async () => {
     try {
       if (!state.file) throw new Error('No file selected');
       if (!isPdfFile(state.file)) throw new Error('Manual redaction is only available for PDFs');
       openRedactModal();
-      if (fromReport) {
-        resetReviewDecisionsToDefault();
-        setText($('#redact-hint'), 'Preparing generated redacted preview...');
-        await createBasePdfSession();
-        try {
-          await createReviewDisplayPdfSession();
-        } catch {
-          // If auto-generated redacted PDF is unavailable, keep manual redaction usable.
-          await createPdfSession();
-          state.manual.baseSessionId = state.manual.baseSessionId || state.manual.sessionId;
-          state.manual.baseOriginalName = state.manual.baseOriginalName || state.manual.originalName;
-          toast('error', 'Generated preview unavailable', 'Falling back to original PDF for manual redaction.');
-        }
-      } else {
-        setText($('#redact-hint'), 'Preparing session...');
-        await createPdfSession();
-        state.manual.baseSessionId = state.manual.sessionId;
-        state.manual.baseOriginalName = state.manual.originalName;
-      }
+      setText($('#redact-hint'), 'Preparing session…');
+      await createPdfSession();
       setManualPage(1);
       setText($('#redact-hint'), `Rendering page 1 • DPI ${state.manual.dpi}`);
       await renderManualPage(1);
       renderManualBoxList();
-      if (fromReport) {
-        setText($('#redact-hint'), 'Previewing generated redactions. Approve/reject candidates, add boxes, then Generate to rebuild from the original PDF.');
-      } else {
-        setText($('#redact-hint'), 'Drag to draw boxes. Click Generate when ready.');
-      }
+      setText($('#redact-hint'), 'Drag to draw boxes. Click Generate when ready.');
     } catch (e) {
       toast('error', 'Manual redaction unavailable', String(e?.message || e));
       closeRedactModal();
     }
   };
 
-  $('#btn-open-manual-redact')?.addEventListener('click', () => void openManual({ fromReport: false }));
-  $('#btn-open-manual-redact-report')?.addEventListener('click', () => void openManual({ fromReport: true }));
+  $('#btn-open-manual-redact')?.addEventListener('click', () => void openManual());
   $('#btn-close-redact')?.addEventListener('click', closeRedactModal);
   $('#redact-overlay')?.addEventListener('click', closeRedactModal);
 
@@ -1967,12 +1637,6 @@ function wireUi() {
     hide($('#btn-download-manual'));
   });
   $('#btn-generate-manual')?.addEventListener('click', () => void generateManualRedaction());
-
-  $('#evidence-filter-all')?.addEventListener('click', () => setReviewFilter('all'));
-  $('#evidence-filter-approved')?.addEventListener('click', () => setReviewFilter('approved'));
-  $('#evidence-filter-rejected')?.addEventListener('click', () => setReviewFilter('rejected'));
-  $('#evidence-prev')?.addEventListener('click', () => shiftReviewPage(-1));
-  $('#evidence-next')?.addEventListener('click', () => shiftReviewPage(1));
 
   // Drawing interactions
   const hit = $('#redact-hit');
@@ -1996,25 +1660,67 @@ function wireUi() {
   hit?.addEventListener('pointercancel', end);
 
   // Cleanup blob URL when leaving
-  window.addEventListener('pagehide', () => {
-    flushAnalyzeResultCleanup();
-    destroyPreviewUrl();
-    void deletePdfSession();
-  });
-  window.addEventListener('beforeunload', () => {
-    flushAnalyzeResultCleanup();
-    destroyPreviewUrl();
-    void deletePdfSession();
-  });
+  window.addEventListener('beforeunload', () => { destroyPreviewUrl(); void deletePdfSession(); });
   window.addEventListener('resize', () => {
     // Keep manual redaction overlay aligned if the viewport size changes.
     renderManualBoxesOnPage();
   });
 
+  // Track mouse for card glow effect
+  document.addEventListener('mousemove', (e) => {
+    for (const card of document.querySelectorAll('.card')) {
+      const rect = card.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      card.style.setProperty('--mouse-x', `${x}px`);
+      card.style.setProperty('--mouse-y', `${y}px`);
+    }
+  });
+
+  $('#btn-demo-mode')?.addEventListener('click', async () => {
+    try {
+      const btn = $('#btn-demo-mode');
+      if (btn) btn.disabled = true;
+      toast('success', 'Loading demo', 'Fetching sample document...');
+      const res = await fetch('assets/2pagedoc.pdf');
+      if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to load sample`);
+      const blob = await res.blob();
+      const file = new File([blob], 'Filled_In_Employement_Application.pdf', { type: 'application/pdf' });
+      setFile(file);
+      setTimeout(() => { $('#btn-analyze')?.click(); }, 500);
+    } catch (e) {
+      toast('error', 'Demo failed', String(e?.message || e));
+    } finally {
+      const btn = $('#btn-demo-mode');
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  // Tabs logic
+  const tabNav = document.getElementById('report-tabs');
+  if (tabNav) {
+    tabNav.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab-btn');
+      if (!btn) return;
+      const targetId = btn.getAttribute('data-target');
+      if (!targetId) return;
+
+      // Update buttons
+      tabNav.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Update panels
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active', 'hidden'));
+      const activePanel = document.getElementById(targetId);
+      if (activePanel) {
+        activePanel.classList.add('active');
+      }
+    });
+  }
+
   // Initialize
   resetRunUi();
   renderPreviewUi();
-  requireTerms({ online: state.ui.modelMode === 'online' });
 }
 
 wireUi();

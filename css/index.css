@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 @import url("animations.css");
 @import url("button.css");
 @import url("previews.css");
@@ -5,7 +9,8 @@
 @import url("select.css");
 @import url("textarea.css");
 @import url("themes/light.css");
-@import url("dev.css"); /* temp */
+@import url("dev.css");
+/* temp */
 
 :root {
     --docz-color-background: #0b1220;
@@ -43,27 +48,27 @@ html.docz {
     color: var(--docz-color-foreground);
 }
 
-html.docz > body {
+html.docz>body {
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Apple Color Emoji", "Segoe UI Emoji";
     margin: unset;
 }
 
-html.docz > body h1,
-html.docz > body h2,
-html.docz > body h3,
-html.docz > body h4,
-html.docz > body h5,
-html.docz > body h6,
-html.docz > body p {
+html.docz>body h1,
+html.docz>body h2,
+html.docz>body h3,
+html.docz>body h4,
+html.docz>body h5,
+html.docz>body h6,
+html.docz>body p {
     line-height: 1.25;
     margin: unset;
 }
 
-html.docz > body p {
+html.docz>body p {
     line-height: 1.5;
 }
 
-html.docz > body img {
+html.docz>body img {
     pointer-events: none;
     user-select: none;
 }
@@ -73,7 +78,7 @@ html.docz .docz-center {
     margin-right: auto;
 }
 
-html.docz .docz-center-frame > * {
+html.docz .docz-center-frame>* {
     margin-left: auto;
     margin-right: auto;
     text-align: center;
@@ -87,20 +92,20 @@ html.docz .docz-flex {
     justify-content: center;
 }
 
-html.docz .docz-flex > * {
+html.docz .docz-flex>* {
     margin: 0.75em !important;
 }
 
 /*  */
 
-html.docz > body main section {
+html.docz>body main section {
     overflow: hidden;
     padding: var(--docz-padding-section);
     position: relative;
     z-index: 0;
 }
 
-html.docz > body main section *:not(:first-child) {
+html.docz>body main section *:not(:first-child) {
     margin-top: 1em;
 }
 
@@ -109,13 +114,13 @@ html.docz .docz-center-frame {
     width: 100%;
 }
 
-html.docz .docz-center-frame > h1 {
+html.docz .docz-center-frame>h1 {
     letter-spacing: 0.06em;
     font-weight: 700;
     font-size: clamp(1.8rem, 2.6vw, 2.4rem);
 }
 
-html.docz .docz-center-frame > h1 + p {
+html.docz .docz-center-frame>h1+p {
     color: var(--docz-color-muted);
     margin-top: 0.75em;
 }
@@ -163,7 +168,7 @@ html.docz .docz-input {
     min-width: min(520px, 80vw);
 }
 
-html.docz > body main > img:last-child {
+html.docz>body main>img:last-child {
     height: 100%;
     left: 0;
     margin: unset;

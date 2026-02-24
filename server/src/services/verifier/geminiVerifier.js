@@ -24,7 +24,14 @@ export async function verifyWithGemini(prompts, apiKey, options = {}) {
     });
     return { ...ver, classifier: cls };
   } catch (err) {
-    return { verdict: 'no', rationale: 'gemini_error', contradictions: [safeErrorDetail(err)] };
+    const detail = safeErrorDetail(err);
+    const rateLimited = isGeminiRateLimitedError(err, detail);
+    return {
+      verdict: 'no',
+      rationale: rateLimited ? 'gemini_rate_limited' : 'gemini_error',
+      contradictions: [detail],
+      rate_limited: rateLimited,
+    };
   }
 }
 
@@ -100,4 +107,15 @@ function safeJson(rawText) {
     try { return JSON.parse(fragment); } catch { }
   }
   return { raw: rawText };
+}
+
+function isGeminiRateLimitedError(err, detail = '') {
+  const status = Number(err?.response?.status || 0) || 0;
+  if (status === 429) return true;
+  const text = `${String(detail || '')} ${String(err?.message || '')}`.toLowerCase();
+  return text.includes('resource_exhausted') ||
+    text.includes('rate limit') ||
+    text.includes('too many requests') ||
+    text.includes('quota') ||
+    text.includes('429');
 }
