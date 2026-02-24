@@ -1246,7 +1246,6 @@ body.modal-lock {
 }
 
 a {
-  color: rgb(99, 102, 241);
   text-decoration: none;
   transition: all 0.15s ease;
 }
