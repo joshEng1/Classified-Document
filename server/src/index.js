@@ -32,6 +32,64 @@ import { safeErrorDetail } from './util/security.js';
 // Resolve current file/dir for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+function stripWrappingQuotes(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+function parseDotEnvLine(line) {
+  const raw = String(line || '');
+  if (!raw.trim() || raw.trimStart().startsWith('#')) return null;
+
+  const cleaned = raw.startsWith('export ') ? raw.slice(7) : raw;
+  const eq = cleaned.indexOf('=');
+  if (eq <= 0) return null;
+
+  const key = cleaned.slice(0, eq).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
+
+  let value = cleaned.slice(eq + 1);
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
+    value = stripWrappingQuotes(trimmed);
+  } else {
+    value = String(value).replace(/\s+#.*$/, '').trim();
+  }
+  return { key, value };
+}
+
+function loadLocalEnvFile() {
+  const envPath = path.join(__dirname, '..', '.env');
+  if (!fs.existsSync(envPath)) return;
+
+  try {
+    if (typeof process.loadEnvFile === 'function') {
+      process.loadEnvFile(envPath);
+      return;
+    }
+  } catch {
+    // Fallback parser below for older runtimes.
+  }
+
+  try {
+    const text = fs.readFileSync(envPath, 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+      const parsed = parseDotEnvLine(line);
+      if (!parsed) continue;
+      if (process.env[parsed.key] == null) process.env[parsed.key] = parsed.value;
+    }
+  } catch {
+    // Keep startup resilient; missing local env should not crash server.
+  }
+}
+
+loadLocalEnvFile();
+
 // Read package version
 const pkgPath = path.join(__dirname, '..', 'package.json');
 let version = '0.0.0';
@@ -553,17 +611,32 @@ const upload = multer({
   },
 });
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, version });
+app.get('/health', async (_req, res) => {
+  const ping = String(_req?.query?.ping || '').trim().toLowerCase();
+  const shouldPing = ping === 'true' || ping === '1' || ping === 'yes' || ping === 'on';
+  const mode = getDefaultModelMode();
+  const provider_status = await buildProviderStatus({ mode, ping: shouldPing });
+  res.json({ ok: true, version, provider_status });
 });
 
 // Back-compat alias (some docs/UI refer to /api/health)
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, version });
+app.get('/api/health', async (req, res) => {
+  const ping = String(req?.query?.ping || '').trim().toLowerCase();
+  const shouldPing = ping === 'true' || ping === '1' || ping === 'yes' || ping === 'on';
+  const mode = getDefaultModelMode();
+  const provider_status = await buildProviderStatus({ mode, ping: shouldPing });
+  res.json({ ok: true, version, provider_status });
 });
 
 app.get('/api/provider-status', async (req, res) => {
   const mode = normalizeModelMode(req?.query?.model_mode, getDefaultModelMode());
+  const pingRaw = String(req?.query?.ping ?? '').trim().toLowerCase();
+  const ping = pingRaw === '' ? true : (pingRaw === 'true' || pingRaw === '1' || pingRaw === 'yes' || pingRaw === 'on');
+  const out = await buildProviderStatus({ mode, ping });
+  return res.json(out);
+});
+
+async function buildProviderStatus({ mode, ping }) {
   const provider = resolveOnlineProvider();
   const out = {
     ok: true,
@@ -571,15 +644,16 @@ app.get('/api/provider-status', async (req, res) => {
     online_enabled: mode === 'online',
     provider,
     key_configured: false,
-    connected: false,
+    connected: null,
     model: null,
     detail: '',
     ocr: getAzureDocumentIntelligenceConfig(),
   };
+
   try {
     if (mode !== 'online') {
       out.detail = 'online_mode_not_selected';
-      return res.json(out);
+      return out;
     }
 
     if (provider === 'gemini') {
@@ -589,21 +663,29 @@ app.get('/api/provider-status', async (req, res) => {
       out.model = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
       if (!out.key_configured) {
         out.detail = 'missing_gemini_credentials';
-        return res.json(out);
+        out.connected = false;
+        return out;
       }
 
-      const url = apiKey
-        ? `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
-        : 'https://generativelanguage.googleapis.com/v1beta/models';
-      const headers = (!apiKey && token) ? { Authorization: `Bearer ${token}` } : undefined;
-      const ping = await axios.get(url, { timeout: 12_000, headers });
-      out.connected = ping.status >= 200 && ping.status < 300;
-      out.detail = out.connected ? 'gemini_reachable' : `gemini_http_${ping.status}`;
+      if (ping) {
+        const url = apiKey
+          ? `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
+          : 'https://generativelanguage.googleapis.com/v1beta/models';
+        const headers = (!apiKey && token) ? { Authorization: `Bearer ${token}` } : undefined;
+        const resp = await axios.get(url, { timeout: 12_000, headers });
+        out.connected = resp.status >= 200 && resp.status < 300;
+        out.detail = out.connected ? 'gemini_reachable' : `gemini_http_${resp.status}`;
+      } else {
+        out.connected = null;
+        out.detail = 'ping_skipped';
+      }
+
       if (!out.ocr.configured) {
         out.connected = false;
         out.detail = 'azure_di_not_configured';
       }
-      return res.json(out);
+
+      return out;
     }
 
     const openAiKey = resolveOnlineApiKey('openai');
@@ -611,24 +693,33 @@ app.get('/api/provider-status', async (req, res) => {
     out.model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     if (!openAiKey) {
       out.detail = 'missing_openai_credentials';
-      return res.json(out);
+      out.connected = false;
+      return out;
     }
-    const ping = await axios.get('https://api.openai.com/v1/models', { timeout: 12_000, headers: { Authorization: `Bearer ${openAiKey}` } });
-    out.connected = ping.status >= 200 && ping.status < 300;
-    out.detail = out.connected ? 'openai_reachable' : `openai_http_${ping.status}`;
+
+    if (ping) {
+      const resp = await axios.get('https://api.openai.com/v1/models', { timeout: 12_000, headers: { Authorization: `Bearer ${openAiKey}` } });
+      out.connected = resp.status >= 200 && resp.status < 300;
+      out.detail = out.connected ? 'openai_reachable' : `openai_http_${resp.status}`;
+    } else {
+      out.connected = null;
+      out.detail = 'ping_skipped';
+    }
+
     if (!out.ocr.configured) {
       out.connected = false;
       out.detail = 'azure_di_not_configured';
     }
-    return res.json(out);
+
+    return out;
   } catch (e) {
     logServerError('provider-status', e);
     const status = Number(e?.response?.status || 0) || null;
     out.connected = false;
     out.detail = status ? `${provider}_http_${status}` : safeErrorDetail(e, 'provider_status_failed');
-    return res.json(out);
+    return out;
   }
-});
+}
 
 app.get('/api/redacted/:name', (req, res) => {
   const name = String(req.params?.name || '');
@@ -648,8 +739,11 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
     const docPath = req.body.document_path || (req.file ? req.file.originalname : undefined);
     const temperature = Number.isFinite(Number(req.body?.temperature)) ? Number(req.body.temperature) : undefined;
     const modelMode = resolveModelMode(req);
+    const online = isOnlineMode(modelMode);
+    const azureOcrConfigured = Boolean(getAzureDocumentIntelligenceConfig()?.configured);
+    const onlineOcrOnly = online && azureOcrConfigured;
     const rawNoImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
-    const noImages = isOnlineMode(modelMode) ? false : rawNoImages;
+    const noImages = onlineOcrOnly ? false : rawNoImages;
 
     if (!filePath && !req.body.text) {
       return res.status(400).json({ error: 'No file or text provided' });
@@ -660,9 +754,9 @@ app.post('/api/process', upload.single('file'), async (req, res) => {
       filePath,
       originalName: req.file?.originalname,
       providedText: req.body.text,
-      preferDocling: !isOnlineMode(modelMode),
+      preferDocling: !onlineOcrOnly,
       disableVision: noImages,
-      onlineVisionOnly: isOnlineMode(modelMode),
+      onlineVisionOnly: onlineOcrOnly,
     });
     const analyze_cleanup_ref = registerAnalyzeResultRefFromExtraction(extraction);
 
@@ -836,8 +930,11 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     const docPath = req.body.document_path || (req.file ? req.file.originalname : undefined);
     const temperature = Number.isFinite(Number(req.body?.temperature)) ? Number(req.body.temperature) : undefined;
     const modelMode = resolveModelMode(req);
+    const online = isOnlineMode(modelMode);
+    const azureOcrConfigured = Boolean(getAzureDocumentIntelligenceConfig()?.configured);
+    const onlineOcrOnly = online && azureOcrConfigured;
     const rawNoImages = String(req.body?.no_images || 'false').toLowerCase() === 'true';
-    const noImages = isOnlineMode(modelMode) ? false : rawNoImages;
+    const noImages = onlineOcrOnly ? false : rawNoImages;
     if (!filePath && !req.body.text) {
       send('error', { error: 'No file or text provided' });
       return res.end();
@@ -849,9 +946,9 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       filePath,
       originalName: req.file?.originalname,
       providedText: req.body.text,
-      preferDocling: !isOnlineMode(modelMode),
+      preferDocling: !onlineOcrOnly,
       disableVision: noImages,
-      onlineVisionOnly: isOnlineMode(modelMode),
+      onlineVisionOnly: onlineOcrOnly,
     });
     const analyze_cleanup_ref = registerAnalyzeResultRefFromExtraction(extraction);
     send('extract', { meta: extraction.meta, status: extraction.status });
@@ -882,6 +979,15 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       send('status', { phase: 'online_pipeline_fallback', reason: 'missing_gemini_api_key' });
     }
     let completed = 0;
+    let geminiRateLimitWarned = false;
+    const streamWarnings = [];
+    const warnGeminiRateLimited = (detail = 'Gemini API rate limited; model-assisted checks may be partial for this run.') => {
+      if (geminiRateLimitWarned) return;
+      geminiRateLimitWarned = true;
+      const message = String(detail || 'Gemini API rate limited').trim();
+      streamWarnings.push({ code: 'gemini_rate_limited', message });
+      send('warning', { code: 'gemini_rate_limited', message });
+    };
     const moderationByChunk = [];
     const piiByChunk = [];
 
@@ -901,6 +1007,9 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
         summ = s;
         mod = m;
         piiFindingsChunk = dedupePiiFindings([...(piiRegex || []), ...(piiModel || [])]);
+        if (isGeminiRateLimitedObject(s) || isGeminiRateLimitedObject(m)) {
+          warnGeminiRateLimited('Gemini API rate limited during chunk analysis; continuing with partial fallback signals.');
+        }
       } else {
         const pSumm = summarizeChunk({ text: ch.text, baseUrl: slmUrl, temperature });
         const pMod = moderateText({ text: ch.text, baseUrl: guardianUrl });
@@ -1015,6 +1124,9 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
     const route = forceSecond ? { routed: true, reason: 'forced_second_pass' } : shouldRoute({ local, guards, meta: extraction.meta });
     let verifier = null;
     if (route.routed) verifier = await runVerifier(updatedPrompts, temperature, modelMode);
+    if (isGeminiRateLimitedObject(verifier)) {
+      warnGeminiRateLimited('Gemini API rate limited during verification; final verdict may be conservative.');
+    }
     const finalLabel = extractVerifierResultLabel(verifier) || local.label;
     const verifierAccepted = normalizeVerifierVerdict(verifier?.verdict) === 'yes';
 
@@ -1049,6 +1161,7 @@ app.post('/api/process-stream', upload.single('file'), async (req, res) => {
       verifier,
       evidence: extraction.evidence,
       redaction_review,
+      warnings: streamWarnings,
       final,
       chunks: { total: chunks.length },
     });
@@ -1614,6 +1727,31 @@ function extractLabel(obj) {
 
 function buildSearchTexts({ pii, safety, guardian, meta }) {
   const out = [];
+  const seen = new Set();
+  const totalPages = Math.max(1, Number(meta?.pages || 1));
+
+  function pushSearch({ page, text, label }) {
+    const p = Number(page || 0) || 0;
+    const t = normalizeTextCandidate(text, 320);
+    const l = normalizeTextCandidate(label || 'text', 80) || 'text';
+    if (!p || !t) return;
+    const key = `${p}|${l.toLowerCase()}|${t.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ page: p, text: t, label: l });
+  }
+
+  function shouldUseAllPagesFallback(type, text) {
+    const t = String(type || '').toLowerCase();
+    const v = String(text || '');
+    if (!v) return false;
+    if (v.length >= 8) return true;
+    if (/\d/.test(v) || v.includes('@')) return true;
+    if (t.includes('ssn') || t.includes('phone') || t.includes('email') || t.includes('zip') || t.includes('address') || t.includes('dob') || t.includes('credit') || t.includes('financial')) {
+      return true;
+    }
+    return false;
+  }
 
   // Use Granite Guardian as the high-level gate for what to redact beyond PII:
   // - Guardian does not provide exact spans, so we use our regex-based safety matches
@@ -1636,7 +1774,7 @@ function buildSearchTexts({ pii, safety, guardian, meta }) {
       const text = String(m?.snippet || '').trim();
       const label = m?.category ? `safety_${m.category}` : 'safety_match';
       if (!page || !text) continue;
-      out.push({ page, text, label });
+      pushSearch({ page, text, label });
     }
   }
 
@@ -1644,16 +1782,25 @@ function buildSearchTexts({ pii, safety, guardian, meta }) {
     const page = Number(it?.page || 0);
     const text = String(it?.value || '').trim();
     const label = it?.type ? `pii_${it.type}` : 'pii_match';
-    if (!page || !text) continue;
-    out.push({ page, text, label });
+    if (!text) continue;
+    if (page) pushSearch({ page, text, label });
+
+    // Fallback across all pages to handle imperfect page mapping from OCR/chunking.
+    // This prevents "no physical redaction" when the detected value is correct but page is off.
+    if (shouldUseAllPagesFallback(it?.type, text)) {
+      for (let p = 1; p <= totalPages; p++) {
+        pushSearch({ page: p, text, label: `${label}_any_page` });
+        if (out.length >= 120) break;
+      }
+    }
+    if (out.length >= 120) break;
   }
 
   // Persisted user rules: apply as exact search text matches across all pages.
   const rules = loadRedactionRules();
-  const pages = Math.max(1, Number(meta?.pages || 1));
   for (const r of rules.slice(0, 20)) {
-    for (let p = 1; p <= pages; p++) {
-      out.push({ page: p, text: r.text, label: `user_${r.label || 'rule'}` });
+    for (let p = 1; p <= totalPages; p++) {
+      pushSearch({ page: p, text: r.text, label: `user_${r.label || 'rule'}` });
       if (out.length >= 120) break;
     }
     if (out.length >= 120) break;
@@ -1715,6 +1862,29 @@ function dedupePiiFindings(findings) {
   return out;
 }
 
+function isGeminiRateLimitText(value) {
+  const s = String(value || '').toLowerCase();
+  if (!s) return false;
+  return s.includes('resource_exhausted') ||
+    s.includes('rate limit') ||
+    s.includes('too many requests') ||
+    s.includes('quota') ||
+    s.includes('429');
+}
+
+function isGeminiRateLimitedObject(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (obj?.rate_limited === true) return true;
+  if (isGeminiRateLimitText(obj?.error) || isGeminiRateLimitText(obj?.detail) || isGeminiRateLimitText(obj?.reason) || isGeminiRateLimitText(obj?.rationale)) {
+    return true;
+  }
+  const combined = [
+    ...(Array.isArray(obj?.contradictions) ? obj.contradictions : []),
+    ...(Array.isArray(obj?.errors) ? obj.errors : []),
+  ];
+  return combined.some((v) => isGeminiRateLimitText(v));
+}
+
 async function maybeGenerateRedactedPdf({ filePath, originalName, extraBoxes, searchTexts }) {
   const enabled = String(process.env.REDACT_OUTPUT_PDF || 'true').toLowerCase();
   if (!['1', 'true', 'yes', 'y', 'on'].includes(enabled)) return null;
@@ -1724,7 +1894,7 @@ async function maybeGenerateRedactedPdf({ filePath, originalName, extraBoxes, se
   if (!isPdf) return null;
 
   const boxes = Array.isArray(extraBoxes) ? extraBoxes : [];
-  const searchTextsList = Array.isArray(searchTexts) ? searchTexts : [];
+  const searchTextsList = dedupeSearchTexts(Array.isArray(searchTexts) ? searchTexts : []);
   const pdfBytes = await redactPdf({ filePath, boxes, searchTexts: searchTextsList, detectPii: true });
   if (!pdfBytes || !Buffer.isBuffer(pdfBytes) || pdfBytes.length < 20) return null;
 
@@ -1791,12 +1961,20 @@ const publicDir = resolveStaticDir('public', [
   path.join(process.cwd(), 'public'),
   path.join(process.cwd(), '../public'),
 ]);
-
 if (publicDir) {
   app.use(express.static(publicDir));
 }
 
-// Optional legacy web/ UI (kept for compatibility)
+const assetsDir = resolveStaticDir('assets', [
+  path.join(__dirname, '../../assets'),
+  path.join(__dirname, '../assets'),
+  path.join(process.cwd(), 'assets'),
+  path.join(process.cwd(), '../assets'),
+]);
+if (assetsDir) {
+  app.use('/assets', express.static(assetsDir));
+}
+
 const webDir = resolveStaticDir('web', [
   path.join(__dirname, '../../web'),
   path.join(__dirname, '../web'),

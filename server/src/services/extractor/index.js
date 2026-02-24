@@ -42,6 +42,7 @@ export async function extractDocument({
   let used = 'none';
   const status = [];
   const userSaysNoImages = Boolean(disableVision);
+  let forceDoclingFallback = false;
   function mark(phase, extra) {
     try { status.push({ phase, at: new Date().toISOString(), ...(extra || {}) }); } catch { }
   }
@@ -86,29 +87,39 @@ export async function extractDocument({
       filePath,
     });
     if (!azure || !azure.text) {
-      mark('azure_di_ocr_error', { error: safeErrorDetail(azure?.error || 'azure_di_required_failed') });
-      throw new Error(azure?.error || 'azure_di_required_failed');
+      const code = String(azure?.error || 'azure_di_required_failed').trim() || 'azure_di_required_failed';
+      mark('azure_di_ocr_error', { error: safeErrorDetail(code) });
+
+      // If Azure DI is not configured, degrade gracefully to Docling/pdf-parse instead of hard-failing.
+      // This prevents a misconfigured cloud deployment from bricking the demo UI.
+      if (code === 'azure_di_missing_endpoint' || code === 'azure_di_missing_key') {
+        forceDoclingFallback = true;
+        mark('azure_di_ocr_fallback', { reason: code });
+      } else {
+        throw new Error(code);
+      }
+    } else {
+      text = azure.text;
+      meta = { ...meta, ...azure.meta, source: 'azure_document_intelligence' };
+      raw = azure.raw;
+      blocks = azure.blocks || [];
+      used = 'azure_document_intelligence';
+      if (azure?.notice?.code === 'azure_di_page_cap_notice') {
+        mark('azure_di_page_cap_notice', { detail: String(azure?.notice?.detail || '') });
+      }
+      multimodal.google.cloud_vision_quick = {
+        enabled: false,
+        has_images: null,
+        reason: 'online_azure_di_only',
+        sampled_pages: [],
+        detections: [],
+      };
+      mark('azure_di_ocr_ok', { pages: meta.pages, text_len: text.length });
     }
-    text = azure.text;
-    meta = { ...meta, ...azure.meta, source: 'azure_document_intelligence' };
-    raw = azure.raw;
-    blocks = azure.blocks || [];
-    used = 'azure_document_intelligence';
-    if (azure?.notice?.code === 'azure_di_page_cap_notice') {
-      mark('azure_di_page_cap_notice', { detail: String(azure?.notice?.detail || '') });
-    }
-    multimodal.google.cloud_vision_quick = {
-      enabled: false,
-      has_images: null,
-      reason: 'online_azure_di_only',
-      sampled_pages: [],
-      detections: [],
-    };
-    mark('azure_di_ocr_ok', { pages: meta.pages, text_len: text.length });
   }
 
   // 2) Local/offline extraction path: Docling first, pdf-parse fallback
-  if (!onlineVisionOnly && preferDocling && filePath) {
+  if ((!onlineVisionOnly || forceDoclingFallback) && filePath && (preferDocling || forceDoclingFallback)) {
     const dl = await extractWithDocling({ filePath });
     if (!dl || !dl.text) {
       const parsed = await extractWithPdfParse({ filePath }).catch(() => null);
