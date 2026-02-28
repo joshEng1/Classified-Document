@@ -1,0 +1,49 @@
+name: Integration (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      docling_url:
+        description: "Public Docling base URL (example: https://classified-doc-docker.onrender.com)"
+        required: true
+        type: string
+      vision_url:
+        description: "Optional Vision server URL"
+        required: false
+        type: string
+
+jobs:
+  testcase-runner:
+    name: Run testcase integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Run integration testcase suite
+        working-directory: server
+        env:
+          DOCLING_URL: ${{ inputs.docling_url }}
+          VISION_URL: ${{ inputs.vision_url }}
+        run: node scripts/run-testcases.js
+
+      - name: Upload testcase results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testcase-results
+          path: .run/testcases/*.json
+          if-no-files-found: ignore

@@ -188,3 +188,14 @@ Notes:
 - Renaming the repo folder changes Docker Compose’s default project name, which changes container names. If you rely on stable names, use `docker compose -p <name> ...` or set `COMPOSE_PROJECT_NAME`.
 - `start-system.sh` is a WSL helper but currently has a hard-coded `PROJECT_DIR` that must match your local path.
 - Docker Compose interpolation does not read `server/.env` automatically. Use `docker compose --env-file .\server\.env ...` or mirror required vars into a root `.env`.
+
+## CI/CD Validation (GitHub Actions)
+
+This repo includes two workflows under `.github/workflows`:
+
+- `ci.yml` runs on PRs and pushes to `main`/`master` for server changes.
+  It validates install, JS syntax, and a startup health smoke test at `/health`.
+- `integration-manual.yml` is a manual workflow (`workflow_dispatch`) for heavier testcase validation against a live Docling URL.
+
+Recommended branch protection:
+- Require the `Validate server` status check before merging to `main`.
