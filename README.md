@@ -4,7 +4,7 @@ Document classification pipeline with:
 
 - Extraction via Docling (container) plus OCR fallback (if `tesseract` is installed)
 - Guard signals + optional PII detection and redaction
-- Local classification (heuristic or llama.cpp) with optional second-pass verification (llama.cpp or OpenAI)
+- Local classification (heuristic or llama.cpp) with optional second-pass verification (llama.cpp or online provider)
 - Static web UI served by the Node server
 
 ## Documentation
@@ -16,6 +16,7 @@ Open the documentation folder and find the following files:
 - Daily command reference: `QUICKREF.md`
 - GPU notes: `GPU-SETUP-WINDOWS.md`, `GPU-SETUP.md`
 - Implementation details: `AGENTS.md`
+- Security posture: `SECURITY.md`
 
 ## Quick Start (Docker + local llama.cpp)
 
@@ -44,7 +45,7 @@ Or start it manually (no helper script):
 4) Start the Docling + server containers:
 
 ```powershell
-docker compose up -d --build
+docker compose --env-file .\server\.env up -d --build
 ```
 
 5) Open: `http://localhost:5055/`
@@ -83,12 +84,97 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 - Prompts/rules: `server/src/config/prompts.json`
 - Common env vars:
   - `PORT` (server port, default 5055)
-  - `VERIFIER_ENGINE=llama|openai`
+  - `VERIFIER_ENGINE=llama|openai` (`llama` => local default mode, non-`llama` => online default mode)
+  - `ONLINE_PROVIDER=gemini|openai`
+  - `GEMINI_API_KEY` and `GEMINI_MODEL` (if using Gemini)
+  - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` and `AZURE_DOCUMENT_INTELLIGENCE_KEY` (online OCR)
   - `LLAMA_URL` (llama.cpp server URL)
   - `DOCLING_URL` (Docling REST URL; Docker Compose sets this to `http://docling:7000` inside the container)
+  - `REDACT_ENGINE=auto|native|docling` (explicit redaction engine selection)
+  - `NATIVE_REDACT_FALLBACK=true|false` (only used when `REDACT_ENGINE=auto`)
+  - `NATIVE_REDACT_DPI` and `NATIVE_REDACT_JPEG_QUALITY` (quality/performance knobs for native fallback)
   - `VERIFY_SECOND_PASS=true|false` (Docker Compose defaults this to true)
   - `REDACT_PII=true|false` and `REDACT_OUTPUT_PDF=true|false`
   - `OFFLINE_MODE=true|false`
+
+## Online Deployment (Hosted LLM, no local model)
+
+For public use, keep the same endpoints/UI and document workflow, but run verifier via an online provider (Gemini/OpenAI) instead of local llama.cpp:
+
+1. Copy `server/.env.example` to `server/.env`.
+2. Set:
+   - `ONLINE_PROVIDER=gemini`
+   - `GEMINI_API_KEY=<your key>`
+   - `GEMINI_MODEL=gemini-3-flash-preview` (or your preferred Gemini model)
+   - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=<https://<resource>.cognitiveservices.azure.com>`
+   - `AZURE_DOCUMENT_INTELLIGENCE_KEY=<your key>`
+   - Optional: `AZURE_DOCUMENT_INTELLIGENCE_MODEL=prebuilt-read`
+   - `VERIFIER_ENGINE=openai` (or any non-`llama` value to default to online mode)
+   - `OFFLINE_MODE=false`
+   - `LOCAL_CLASSIFIER=heuristic`
+   - `VERIFY_SECOND_PASS=true`
+3. Restrict web origins with `CORS_ORIGINS` to your portfolio domain(s).
+4. Keep public throttling enabled:
+   - `PUBLIC_API_RATE_LIMIT_ENABLED=true`
+   - tune `PUBLIC_API_RATE_LIMIT_MAX_REQUESTS` and `PUBLIC_API_RATE_LIMIT_WINDOW_MS`
+
+This keeps redaction output and citation checking behavior intact while removing the local model dependency for end users.
+When `ONLINE_PROVIDER=gemini` and Developer Mode selects `Online API`, the streaming pipeline uses Gemini for chunk summarization, moderation scoring, and model-assisted PII extraction (merged with regex PII).
+OCR routing rule:
+- `model_mode=online`: extraction runs with Azure Document Intelligence OCR (`prebuilt-read`) only (no Docling).
+- `model_mode=local` (or `offline`): extraction uses Docling (with pdf-parse fallback) and can run Cloud Vision quick scan for routing/signals.
+- `no_images=true` is only honored in local/offline mode. In online mode it is ignored.
+- Online OCR uses Azure Document Intelligence analyze + polling (inline, timeout-bounded) and fails fast if OCR fails.
+- If fewer pages are returned than requested, Developer Mode logs `azure_di_page_cap_notice` (commonly due to free-tier limits).
+- Redaction review is decision-based: approve/reject candidates, then generate the PDF from approved items only.
+
+Developer UI note: in website Developer Mode, `Model Mode` supports `Online API` and `Local / Offline` (offline is treated the same as local).
+
+## Deploy Backend on Render (Recommended)
+
+Use this when your frontend is hosted separately (for example on Vercel or your portfolio host).
+
+1. In Render, create a new **Web Service** from this repo.
+2. Render should auto-detect `render.yaml` in repo root and prefill settings.
+3. Set required secrets in Render:
+   - `GEMINI_API_KEY`
+   - `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`
+   - `AZURE_DOCUMENT_INTELLIGENCE_KEY`
+   - `CORS_ORIGINS` (set to your frontend origin(s), comma-separated)
+   - `DOCLING_URL` (optional but recommended for full-fidelity redaction + manual preview)
+   - `REDACT_ENGINE` (`auto`, `native`, or `docling`)
+4. Deploy and confirm health:
+   - `GET https://<your-render-service>.onrender.com/health`
+5. Point frontend API base to Render:
+   - Query param: `?api=https://<your-render-service>.onrender.com`
+   - or set a fixed API base in your frontend build.
+
+Notes:
+- Keep `CORS_ALLOW_ALL=false` in production.
+- Keep secrets only in Render environment variables (never in frontend code).
+- This backend is stateless; uploaded/redacted artifacts are temporary.
+- Redaction engine behavior:
+  - `REDACT_ENGINE=native`: always use Node-native raster redaction (fastest to deploy, no Docling dependency).
+  - `REDACT_ENGINE=docling`: require Docling for redaction (no native fallback).
+  - `REDACT_ENGINE=auto` (default): try Docling first; fallback to native only if `NATIVE_REDACT_FALLBACK=true`.
+- If `DOCLING_URL` is missing/unreachable and native mode/fallback is used, output is rasterized (image-based) and manual preview quality/features may be reduced.
+
+## Security Hardening
+
+- API keys remain server-side only (`server/.env`); the browser never receives provider secrets.
+- `.env` files are git-ignored; use `server/.env.example` as the template.
+- API responses now use sanitized error details (secret-like tokens and keys are redacted).
+- API endpoints default to `Cache-Control: no-store` (`API_NO_STORE=true`) to reduce sensitive response caching.
+- Public throttling is supported via:
+  - `PUBLIC_API_RATE_LIMIT_ENABLED=true`
+  - `PUBLIC_API_RATE_LIMIT_MAX_REQUESTS`
+  - `PUBLIC_API_RATE_LIMIT_WINDOW_MS`
+- Uploaded/session/redacted PDF artifacts are auto-pruned:
+  - `UPLOAD_RETENTION_MINUTES`
+  - `UPLOAD_CLEANUP_INTERVAL_MINUTES`
+- Keep verbose logs disabled in production:
+  - `VERBOSE_SERVER_LOGS=false`
+  - `LLAMA_DEBUG=false`
 
 ## API
 
@@ -101,3 +187,4 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 - Renaming the repo folder changes Docker Compose’s default project name, which changes container names. If you rely on stable names, use `docker compose -p <name> ...` or set `COMPOSE_PROJECT_NAME`.
 - `start-system.sh` is a WSL helper but currently has a hard-coded `PROJECT_DIR` that must match your local path.
+- Docker Compose interpolation does not read `server/.env` automatically. Use `docker compose --env-file .\server\.env ...` or mirror required vars into a root `.env`.

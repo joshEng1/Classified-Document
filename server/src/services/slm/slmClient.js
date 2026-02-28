@@ -2,6 +2,7 @@
 // Provides per-chunk summarization suitable for UI tooltips and quick context.
 
 import axios from 'axios';
+import { safeErrorDetail } from '../../util/security.js';
 
 export async function summarizeChunk({ text, baseUrl, temperature }) {
   const url = baseUrl || process.env.SLM_URL || process.env.LLAMA_URL || 'http://localhost:8080';
@@ -33,7 +34,7 @@ export async function summarizeChunk({ text, baseUrl, temperature }) {
     const key_phrases = Array.isArray(parsed?.key_phrases) ? parsed.key_phrases.slice(0, 8) : [];
     return { summary, key_phrases };
   } catch (e) {
-    return { summary: '', key_phrases: [], error: String(e?.message || e) };
+    return { summary: '', key_phrases: [], error: safeErrorDetail(e) };
   }
 }
 

@@ -126,7 +126,7 @@ function setProgress(completed, total) {
   const pct = tot > 0 ? clamp(Math.round((done / tot) * 100), 0, 100) : 0;
   if (bar) bar.style.width = `${pct}%`;
   if (txt) txt.textContent = `${done} / ${tot || 0}`;
-  if (right) right.textContent = tot > 0 ? `${pct}%` : '—';
+  if (right) right.textContent = tot > 0 ? `${pct}%` : '-';
 }
 
 function renderChips(container, items, emptyText = 'None') {
@@ -151,8 +151,15 @@ function renderChips(container, items, emptyText = 'None') {
   container.appendChild(row);
 }
 
-async function fetchJson(url, opts) {
-  const res = await fetch(url, opts);
+async function fetchJson(url, opts = {}, timeoutMs = 12000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), Math.max(1000, Number(timeoutMs || 0) || 12000));
+  let res = null;
+  try {
+    res = await fetch(url, { ...(opts || {}), signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status}: ${txt || res.statusText}`);
@@ -187,6 +194,7 @@ const state = {
     phase: 'idle',
     chunksTotal: 0,
     chunksCompleted: 0,
+    geminiRateLimitSeen: false,
     moderationFlags: new Map(),
     piiByType: new Map(),
     piiTotal: 0,
@@ -231,7 +239,7 @@ function applyUiMode() {
     if (healthPre) {
       if (state.ui.lastHealth) setText(healthPre, JSON.stringify(state.ui.lastHealth, null, 2));
       else if (state.ui.lastHealthError) setText(healthPre, String(state.ui.lastHealthError));
-      else setText(healthPre, 'â€”');
+      else setText(healthPre, 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â');
     }
   }
 
@@ -260,6 +268,7 @@ function resetRunUi() {
     phase: 'idle',
     chunksTotal: 0,
     chunksCompleted: 0,
+    geminiRateLimitSeen: false,
     moderationFlags: new Map(),
     piiByType: new Map(),
     piiTotal: 0,
@@ -271,6 +280,8 @@ function resetRunUi() {
     redactedPdf: null,
   };
 
+  $('#dropzone')?.classList.remove('is-processing');
+
   setStepState('step-extract', 'active', 'Waiting…');
   setStepState('step-chunk', '', 'Waiting…');
   setStepState('step-moderate', '', 'Waiting…');
@@ -281,28 +292,28 @@ function resetRunUi() {
 
   setText($('#mini-flags'), '0');
   setText($('#mini-pii'), '0');
-  setText($('#mini-pages'), '—');
-  setText($('#hero-kpi-sensitivity'), '—');
-  setText($('#hero-kpi-unsafe'), 'Unsafe: —');
-  setText($('#hero-kpi-pages'), '—');
-  setText($('#hero-kpi-images'), '—');
-  setText($('#hero-kpi-pii'), '—');
-  setText($('#hero-kpi-pii-types'), 'Top types: —');
-  setText($('#hero-kpi-mode'), '—');
+  setText($('#mini-pages'), '-');
+  setText($('#hero-kpi-sensitivity'), '-');
+  setText($('#hero-kpi-unsafe'), 'Unsafe: -');
+  setText($('#hero-kpi-pages'), '-');
+  setText($('#hero-kpi-images'), '-');
+  setText($('#hero-kpi-pii'), '-');
+  setText($('#hero-kpi-pii-types'), 'Top types: -');
+  setText($('#hero-kpi-mode'), '-');
 
   const log = $('#activity-log');
   if (log) log.innerHTML = '';
 
   hide($('#report'));
-  setText($('#report-subtitle'), '—');
-  setText($('#kpi-overall'), '—');
-  setText($('#kpi-overall-sub'), '—');
-  setText($('#kpi-pages'), '—');
-  setText($('#kpi-images'), '—');
-  setText($('#kpi-pii-total'), '—');
-  setText($('#kpi-pii-types'), '—');
-  setText($('#kpi-guardian'), '—');
-  setText($('#kpi-guardian-sub'), '—');
+  setText($('#report-subtitle'), '-');
+  setText($('#kpi-overall'), '-');
+  setText($('#kpi-overall-sub'), '-');
+  setText($('#kpi-pages'), '-');
+  setText($('#kpi-images'), '-');
+  setText($('#kpi-pii-total'), '-');
+  setText($('#kpi-pii-types'), '-');
+  setText($('#kpi-guardian'), '-');
+  setText($('#kpi-guardian-sub'), '-');
   $('#evidence-list')?.replaceChildren();
   renderChips($('#safety-concerns'), []);
   renderChips($('#guardian-flags'), []);
@@ -316,7 +327,7 @@ function updateMiniStats() {
   for (const v of state.run.moderationFlags.values()) flagTotal += v;
   setText($('#mini-flags'), String(flagTotal));
   setText($('#mini-pii'), String(state.run.piiTotal));
-  setText($('#mini-pages'), String(state.run.meta?.pages ?? '—'));
+  setText($('#mini-pages'), String(state.run.meta?.pages ?? '-'));
 }
 
 function updateHeroKpis() {
@@ -324,19 +335,20 @@ function updateHeroKpis() {
   if (policy?.sensitivity) setText($('#hero-kpi-sensitivity'), policy.sensitivity);
   if (policy?.unsafe != null) setText($('#hero-kpi-unsafe'), `Unsafe: ${policy.unsafe ? 'Yes' : 'No'}`);
   if (state.run.meta) {
-    setText($('#hero-kpi-pages'), String(state.run.meta.pages ?? '—'));
-    setText($('#hero-kpi-images'), String(state.run.meta.images ?? '—'));
+    setText($('#hero-kpi-pages'), String(state.run.meta.pages ?? '-'));
+    setText($('#hero-kpi-images'), String(state.run.meta.images ?? '-'));
   }
   if (state.run.piiTotal) {
     setText($('#hero-kpi-pii'), String(state.run.piiTotal));
     const top = Array.from(state.run.piiByType.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k);
-    setText($('#hero-kpi-pii-types'), `Top types: ${top.length ? top.join(', ') : '—'}`);
+    setText($('#hero-kpi-pii-types'), `Top types: ${top.length ? top.join(', ') : '-'}`);
   }
 }
 
 function setPhase(phase) {
   state.run.phase = phase;
   if (phase === 'extract_start') {
+    $('#dropzone')?.classList.add('is-processing');
     setStepState('step-extract', 'active', 'Extracting document…');
     setStepState('step-chunk', '', 'Waiting…');
     setStepState('step-moderate', '', 'Waiting…');
@@ -350,41 +362,59 @@ function setPhase(phase) {
   }
   if (phase === 'chunk_processing') {
     setStepState('step-extract', 'done', 'Extraction complete');
-    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '—'}`);
+    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '-'}`);
     setStepState('step-moderate', 'active', 'Running moderation & PII…');
     setStepState('step-final', '', 'Waiting…');
   }
   if (phase === 'final_analysis_start') {
     setStepState('step-extract', 'done', 'Extraction complete');
-    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '—'}`);
+    setStepState('step-chunk', 'done', `Chunks: ${state.run.chunksTotal || '-'}`);
     setStepState('step-moderate', 'done', 'Chunk analysis complete');
     setStepState('step-final', 'active', 'Finalizing report…');
   }
   if (phase === 'final_done') {
+    $('#dropzone')?.classList.remove('is-processing');
     setStepState('step-final', 'done', 'Complete');
   }
 }
 
 async function checkHealth() {
-  try {
-    const url = joinUrl(state.apiBase, '/health');
-    const j = await fetchJson(url, { cache: 'no-store' });
-    setStatusPill('ok', `Online • v${j?.version || '—'}`);
-    state.ui.lastHealth = j;
-    state.ui.lastHealthError = null;
-    const version = String(j?.version || '').trim() || '-';
-    setStatusPill('ok', isDevMode() ? `Online (v${version})` : 'Online');
-    const pre = $('#health-json');
-    if (pre && isDevMode()) setText(pre, JSON.stringify(j, null, 2));
-    return true;
-  } catch (e) {
-    setStatusPill('down', 'Offline');
-    state.ui.lastHealth = null;
-    state.ui.lastHealthError = String(e?.message || e);
-    const pre = $('#health-json');
-    if (pre && isDevMode()) setText(pre, state.ui.lastHealthError);
-    return false;
+  const candidates = [];
+  const primaryBase = normalizeBaseUrl(state.apiBase || '');
+  if (primaryBase) candidates.push(primaryBase);
+  const originBase = normalizeBaseUrl(window.location.origin || '');
+  if (originBase && originBase !== primaryBase) candidates.push(originBase);
+
+  const errors = [];
+  for (const base of candidates) {
+    try {
+      const url = joinUrl(base, '/health');
+      const j = await fetchJson(url, { cache: 'no-store' }, 5000);
+      if (base !== state.apiBase) {
+        state.apiBase = base;
+        localStorage.setItem('apiBase', base);
+        setText($('#api-base-label'), `API: ${state.apiBase}`);
+        logLine(`api_base_recovered: ${base}`);
+      }
+      setStatusPill('ok', `Online v${j?.version || '-'}`);
+      state.ui.lastHealth = j;
+      state.ui.lastHealthError = null;
+      const version = String(j?.version || '').trim() || '-';
+      setStatusPill('ok', isDevMode() ? `Online (v${version})` : 'Online');
+      const pre = $('#health-json');
+      if (pre && isDevMode()) setText(pre, JSON.stringify(j, null, 2));
+      return true;
+    } catch (e) {
+      errors.push(`${base}: ${String(e?.message || e)}`);
+    }
   }
+
+  setStatusPill('down', 'Offline');
+  state.ui.lastHealth = null;
+  state.ui.lastHealthError = errors.join(' | ') || 'health_check_failed';
+  const pre = $('#health-json');
+  if (pre && isDevMode()) setText(pre, state.ui.lastHealthError);
+  return false;
 }
 
 function isPdfFile(file) {
@@ -483,7 +513,7 @@ function setManualPage(pageNo) {
 function setManualPages(total) {
   const n = Math.max(0, Number(total || 0));
   state.manual.pages = n;
-  setText($('#redact-pages'), n ? String(n) : '—');
+  setText($('#redact-pages'), n ? String(n) : '-');
 }
 
 function renderManualBoxList() {
@@ -514,7 +544,7 @@ function renderManualBoxList() {
     const txt = document.createElement('span');
     txt.className = 'text-sm muted';
     const bb = Array.isArray(b?.bbox) ? b.bbox : [];
-    txt.textContent = bb.length === 4 ? bb.map((v) => Number(v).toFixed(1)).join(', ') : '—';
+    txt.textContent = bb.length === 4 ? bb.map((v) => Number(v).toFixed(1)).join(', ') : '-';
     if (!isDevMode()) txt.textContent = `Box ${idx + 1}`;
     left.appendChild(tag);
     left.appendChild(txt);
@@ -919,10 +949,10 @@ function renderEvidence(citations) {
         const t = String(c?.type || '').toLowerCase();
         const suggest = t.includes('ssn') ? 'ssn'
           : t.includes('address') ? 'address'
-          : t.includes('phone') ? 'phone'
-          : t.includes('email') ? 'email'
-          : t.includes('name') ? 'name'
-          : 'custom';
+            : t.includes('phone') ? 'phone'
+              : t.includes('email') ? 'email'
+                : t.includes('name') ? 'name'
+                  : 'custom';
         labelEl.value = suggest;
       }
       void loadRules();
@@ -934,7 +964,7 @@ function renderEvidence(citations) {
 
     const body = document.createElement('div');
     body.className = 'mt-3 text-sm text-neutral-300';
-    body.textContent = String(c?.text || '').slice(0, 260) || '—';
+    body.textContent = String(c?.text || '').slice(0, 260) || '-';
     card.appendChild(body);
     root.appendChild(card);
   }
@@ -952,14 +982,14 @@ function renderFinalReport(data) {
   updateHeroKpis();
 
   const policy = state.run.policy || {};
-  const overall = policy.overall || policy.sensitivity || state.run.final?.label || data?.local?.label || '—';
-  const rationale = policy.rationale || state.run.final?.reason || '—';
+  const overall = policy.overall || policy.sensitivity || state.run.final?.label || data?.local?.label || '-';
+  const rationale = policy.rationale || state.run.final?.reason || '-';
   setText($('#kpi-overall'), overall);
   setText($('#kpi-overall-sub'), rationale);
   setText($('#report-subtitle'), `${String(data?.document_path || 'document')} • ${overall}`);
 
-  setText($('#kpi-pages'), String(state.run.meta?.pages ?? '—'));
-  setText($('#kpi-images'), String(state.run.meta?.images ?? '—'));
+  setText($('#kpi-pages'), String(state.run.meta?.pages ?? '-'));
+  setText($('#kpi-images'), String(state.run.meta?.images ?? '-'));
 
   const piiTotal = Number(data?.pii?.summary?.total ?? data?.pii?.items?.length ?? 0) || 0;
   setText($('#kpi-pii-total'), String(piiTotal));
@@ -995,8 +1025,229 @@ function renderFinalReport(data) {
     setText($('#audit-json'), '');
   }
 
+  // WOW Visualizations
+  renderWowVisualizations(data);
+
+}
+
+function renderWowVisualizations(data) {
+  const normalizePiiItem = (item) => {
+    const type = String(item?.type || item?.entity_type || item?.label || 'Unknown').trim() || 'Unknown';
+    const value = String(item?.value || item?.snippet || item?.mention_text || item?.content || '').trim();
+    const page = Number(item?.page || item?.page_number || item?.pageNo || 0) || 0;
+    const confidenceRaw = item?.score ?? item?.confidence ?? null;
+    const confidence = Number.isFinite(Number(confidenceRaw)) ? Number(confidenceRaw) : null;
+    const bbox = Array.isArray(item?.bbox)
+      ? item.bbox
+      : (Array.isArray(item?.polygon)
+        ? item.polygon
+        : (Array.isArray(item?.bounding_box)
+          ? item.bounding_box
+          : (item?.bounding_regions?.[0]?.polygon || item?.bounding_regions?.polygon || null)));
+    return { raw: item, type, value, page, confidence, bbox };
+  };
+
+  const piiItems = (Array.isArray(data?.pii?.items) ? data.pii.items : []).map(normalizePiiItem);
+  const highRiskTokens = ['address', 'phone', 'name', 'ssn', 'social', 'credit', 'bank', 'passport', 'financial', 'email'];
+  let riskScore = 0;
+  let highRiskCount = 0;
+  let otherRiskCount = 0;
+
+  for (const item of piiItems) {
+    const type = item.type.toLowerCase();
+    const isHighRisk = highRiskTokens.some((token) => type.includes(token));
+    if (isHighRisk) highRiskCount++;
+    else otherRiskCount++;
+  }
+
+  if (highRiskCount > 0) {
+    riskScore = 60 + (highRiskCount * 2) + otherRiskCount;
+  } else if (otherRiskCount > 0) {
+    riskScore = otherRiskCount * 3;
+  }
+  if (Array.isArray(data?.safety?.categories) && data.safety.categories.length > 0) riskScore += 20;
+  riskScore = Math.min(100, riskScore);
+
+  const elRiskVal = document.getElementById('risk-score-value');
+  const elRiskLabel = document.getElementById('risk-score-label');
+  const elRiskActive = document.getElementById('risk-gauge-active');
+  const elGlow = document.getElementById('risk-bg-glow');
+  if (elRiskVal) elRiskVal.textContent = String(Math.floor(riskScore));
+
+  let riskLevel = 'Low Risk';
+  let riskColor = 'emerald';
+  if (riskScore > 40 && riskScore <= 70) {
+    riskLevel = 'Medium Risk';
+    riskColor = 'amber';
+  } else if (riskScore > 70) {
+    riskLevel = 'High Risk';
+    riskColor = 'red';
+  }
+
+  if (elRiskLabel) {
+    elRiskLabel.textContent = riskLevel;
+    elRiskLabel.className = `text-[0.65rem] font-medium uppercase tracking-widest text-${riskColor}-400`;
+  }
+  if (elRiskActive) {
+    elRiskActive.style.transform = `rotate(${45 + (180 * riskScore / 100)}deg)`;
+    const rColorsMap = { emerald: '16,185,129', amber: '245,158,11', red: '239,68,68' };
+    elRiskActive.className = `absolute top-0 left-0 w-48 h-48 rounded-full border-[1.5rem] border-${riskColor}-500 border-t-transparent border-r-transparent transition-transform duration-1000 ease-out shadow-[0_0_15px_rgba(${rColorsMap[riskColor]},0.5)]`;
+  }
+  if (elGlow) {
+    elGlow.className = `absolute inset-0 bg-gradient-to-b from-${riskColor}-500/5 to-transparent pointer-events-none transition-colors`;
+  }
+
+  const elHeatmap = document.getElementById('heatmap-grid');
+  if (elHeatmap) {
+    elHeatmap.innerHTML = '';
+    const pages = Number(data?.meta?.pages || 0) || 1;
+    for (let page = 1; page <= Math.max(1, pages); page++) {
+      const piiOnPage = piiItems.filter((item) => item.page === page).length;
+      let opacity = 0.1;
+      if (piiOnPage > 0) opacity = Math.min(1, 0.2 + (piiOnPage * 0.15));
+      const box = document.createElement('div');
+      box.className = 'w-8 h-8 rounded shrink-0 flex items-center justify-center text-[10px] font-medium';
+      box.style.backgroundColor = `rgba(99, 102, 241, ${opacity})`;
+      box.style.border = `1px solid rgba(99, 102, 241, ${opacity > 0.1 ? opacity + 0.2 : 0.2})`;
+      if (piiOnPage > 3) box.style.boxShadow = '0 0 8px rgba(99,102,241,0.6)';
+      box.textContent = String(page);
+      box.title = `Page ${page}: ${piiOnPage} PII item(s)`;
+      elHeatmap.appendChild(box);
+    }
+  }
+
+  const elEvidTable = document.getElementById('interactive-evidence-table');
+  const elFilterType = document.getElementById('filter-pii-type');
+  if (elEvidTable && piiItems.length > 0) {
+    const types = new Set(piiItems.map((item) => item.type.toLowerCase()));
+    if (elFilterType) {
+      elFilterType.innerHTML = '<option value="all">All Types</option>';
+      Array.from(types).sort().forEach((type) => {
+        const opt = document.createElement('option');
+        opt.value = type;
+        opt.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+        elFilterType.appendChild(opt);
+      });
+      const newFilterType = elFilterType.cloneNode(true);
+      elFilterType.parentNode.replaceChild(newFilterType, elFilterType);
+      newFilterType.addEventListener('change', (e) => {
+        renderTable(String(e?.target?.value || 'all'));
+      });
+    }
+
+    const renderTable = (filterType) => {
+      elEvidTable.innerHTML = '';
+      const filtered = filterType === 'all'
+        ? piiItems
+        : piiItems.filter((item) => item.type.toLowerCase() === filterType);
+      if (!filtered.length) {
+        elEvidTable.innerHTML = '<tr><td colspan="4" class="px-5 py-8 text-center text-neutral-500">No findings match this filter.</td></tr>';
+        return;
+      }
+
+      for (const item of filtered) {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-white/[0.02] cursor-pointer transition-colors border-t border-white/[0.04] group';
+        const eType = item.type;
+        const snippet = item.value.slice(0, 100);
+        const conf = Number.isFinite(item.confidence) ? `${Math.round(item.confidence * 100)}%` : '-';
+        const page = item.page || '-';
+        const isHighRisk = highRiskTokens.some((token) => eType.toLowerCase().includes(token));
+        const badgeColor = isHighRisk ? 'red' : 'amber';
+
+        tr.innerHTML = `
+          <td class="px-5 py-3">
+            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-${badgeColor}-500/10 border border-${badgeColor}-500/20 text-${badgeColor}-400 text-xs font-medium">
+              ${eType}
+            </span>
+          </td>
+          <td class="px-5 py-3 font-mono text-xs text-neutral-300 truncate max-w-xs group-hover:text-white transition-colors" title="${item.value.replace(/"/g, '&quot;')}">
+            ${snippet || '<span class="italic text-neutral-600">No snippet provided</span>'}
+          </td>
+          <td class="px-5 py-3 text-neutral-400">${conf}</td>
+          <td class="px-5 py-3 text-right text-neutral-500">Pg ${page}</td>
+        `;
+
+        tr.addEventListener('mouseenter', () => {
+          if (typeof setManualPage === 'function' && Number(page) > 0) {
+            setManualPage(Number(page));
+          }
+          if (item.bbox) {
+            renderManualBoxesOnPageWithTemp(item.bbox, page);
+          } else if (typeof renderManualBoxesOnPage === 'function') {
+            renderManualBoxesOnPage();
+          }
+        });
+
+        tr.addEventListener('click', () => {
+          try {
+            openRulesDrawer();
+            const textEl = document.getElementById('rule-text');
+            const labelEl = document.getElementById('rule-label');
+            if (textEl) textEl.value = item.value;
+            if (labelEl) labelEl.value = eType.toLowerCase().substring(0, 25);
+            if (typeof loadRules === 'function') void loadRules();
+          } catch { }
+        });
+
+        elEvidTable.appendChild(tr);
+      }
+    };
+
+    renderTable('all');
+  }
+
+  function renderManualBoxesOnPageWithTemp(bboxRaw, pageNo) {
+    if (typeof renderManualBoxesOnPage === 'function') {
+      renderManualBoxesOnPage(); // reset previous
+
+      const layer = document.getElementById('redact-box-layer');
+      const img = document.getElementById('redact-img');
+      const sig = typeof pageSignalFor === 'function' ? pageSignalFor(pageNo || state.manual.currentPage) : null;
+      if (!layer || !img || !sig) return;
+
+      const pageW = Number(sig?.width || 0) || 0;
+      const pageH = Number(sig?.height || 0) || 0;
+      if (!pageW || !pageH) return;
+
+      const bb = Array.isArray(bboxRaw) ? bboxRaw : (bboxRaw?.[0]?.polygon || bboxRaw?.polygon || null);
+      if (!bb || bb.length !== 8) return;
+
+      const rect = img.getBoundingClientRect();
+      const w = rect.width || 1;
+      const h = rect.height || 1;
+
+      // Extract bounding box from polygon
+      const xs = [bb[0], bb[2], bb[4], bb[6]];
+      const ys = [bb[1], bb[3], bb[5], bb[7]];
+      const x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const y0 = Math.min(...ys), y1 = Math.max(...ys);
+
+      const left = (x0 / pageW) * w;
+      const top = (y0 / pageH) * h;
+      const width = ((x1 - x0) / pageW) * w;
+      const height = ((y1 - y0) / pageH) * h;
+
+      const div = document.createElement('div');
+      div.className = 'absolute border-2 border-indigo-400 bg-indigo-500/20 animate-pulse z-20 pointer-events-none rounded transition-all';
+      div.style.left = `${left}px`;
+      div.style.top = `${top}px`;
+      div.style.width = `${Math.max(2, width)}px`;
+      div.style.height = `${Math.max(2, height)}px`;
+      div.style.boxShadow = '0 0 15px rgba(99,102,241,0.5)';
+      layer.appendChild(div);
+    }
+  }
   show($('#report'));
   setPhase('final_done');
+
+  // Celebration effect
+  const reportEl = $('#report');
+  if (reportEl) {
+    reportEl.classList.remove('report-celebration');
+    void reportEl.offsetWidth; // Trigger reflow to restart animation
+    reportEl.classList.add('report-celebration');
+  }
 }
 
 function bumpFlagCounts(flags) {
@@ -1021,7 +1272,7 @@ function handleSseEvent(eventName, payload) {
       const phase = String(payload?.phase || '');
       if (phase) {
         setPhase(phase);
-        logLine(`phase=${phase}`);
+        logLine(`phase = ${phase} `);
       }
       break;
     }
@@ -1029,40 +1280,40 @@ function handleSseEvent(eventName, payload) {
       const meta = payload?.meta || {};
       state.run.meta = meta;
       setText($('#step-extract-sub'), 'Extraction complete');
-      setText($('#mini-pages'), String(meta?.pages ?? '—'));
-      setText($('#hero-kpi-pages'), String(meta?.pages ?? '—'));
-      setText($('#hero-kpi-images'), String(meta?.images ?? '—'));
-      logLine(`extract: pages=${meta?.pages ?? '—'} images=${meta?.images ?? '—'}`);
+      setText($('#mini-pages'), String(meta?.pages ?? '-'));
+      setText($('#hero-kpi-pages'), String(meta?.pages ?? '-'));
+      setText($('#hero-kpi-images'), String(meta?.images ?? '-'));
+      logLine(`extract: pages = ${meta?.pages ?? '-'} images = ${meta?.images ?? '-'} `);
       break;
     }
     case 'precheck': {
       const pages = Number(payload?.pages || 0) || 0;
       const images = Number(payload?.images || 0) || 0;
-      setText($('#mini-pages'), pages ? String(pages) : '—');
-      setText($('#hero-kpi-pages'), pages ? String(pages) : '—');
+      setText($('#mini-pages'), pages ? String(pages) : '-');
+      setText($('#hero-kpi-pages'), pages ? String(pages) : '-');
       setText($('#hero-kpi-images'), String(images));
-      logLine(`precheck: pages=${pages} images=${images} scanned=${payload?.legibility?.isLikelyScanned ? 'yes' : 'no'}`);
+      logLine(`precheck: pages = ${pages} images = ${images} scanned = ${payload?.legibility?.isLikelyScanned ? 'yes' : 'no'} `);
       break;
     }
     case 'chunk_index': {
       const total = Number(payload?.total || 0) || 0;
       state.run.chunksTotal = total;
-      setText($('#step-chunk-sub'), `Chunks: ${total || '—'}`);
+      setText($('#step-chunk-sub'), `Chunks: ${total || '-'} `);
       setProgress(0, total);
-      logLine(`chunk_index: total=${total}`);
+      logLine(`chunk_index: total = ${total} `);
       break;
     }
     case 'chunk': {
       if (state.run.phase !== 'chunk_processing') setPhase('chunk_processing');
       const id = payload?.id;
       const page = payload?.page;
-      setText($('#step-moderate-sub'), `Processing chunk ${id ?? '—'} (page ${page ?? '—'})`);
+      setText($('#step-moderate-sub'), `Processing chunk ${id ?? '-'} (page ${page ?? '-'})`);
       break;
     }
     case 'moderation': {
       bumpFlagCounts(payload?.flags);
       updateMiniStats();
-      logLine(`moderation: flags=${(payload?.flags || []).length} unsafe=${payload?.unsafe ? 'yes' : 'no'}`);
+      logLine(`moderation: flags = ${(payload?.flags || []).length} unsafe = ${payload?.unsafe ? 'yes' : 'no'} `);
       break;
     }
     case 'chunk_pii': {
@@ -1071,7 +1322,7 @@ function handleSseEvent(eventName, payload) {
       bumpPiiCounts(payload?.types);
       updateMiniStats();
       updateHeroKpis();
-      logLine(`pii: +${count} types=${(payload?.types || []).join(', ') || '—'}`);
+      logLine(`pii: +${count} types = ${(payload?.types || []).join(', ') || '-'} `);
       break;
     }
     case 'progress': {
@@ -1086,6 +1337,19 @@ function handleSseEvent(eventName, payload) {
     case 'guardian': {
       state.run.guardian = payload;
       logLine(`guardian: flags=${(payload?.flags || []).length} unsafe=${payload?.unsafe ? 'yes' : 'no'}`);
+      break;
+    }
+    case 'warning': {
+      const code = String(payload?.code || '');
+      if (code === 'gemini_rate_limited') {
+        if (!state.run.geminiRateLimitSeen) {
+          state.run.geminiRateLimitSeen = true;
+          toast('error', 'Gemini API rate limited', String(payload?.message || 'Using partial fallback for this run.'));
+        }
+        logLine(`warning: ${code}`);
+      } else {
+        logLine(`warning: ${code || 'unknown'}`);
+      }
       break;
     }
     case 'final': {
@@ -1203,8 +1467,8 @@ function setFile(file) {
   const size = $('#file-size');
   if (!file) {
     hide(row);
-    setText(name, '—');
-    setText(size, '—');
+    setText(name, '-');
+    setText(size, '-');
     renderPreviewUi();
     return;
   }
@@ -1222,6 +1486,32 @@ function wireUi() {
   // Mode toggle (Business by default; persists to localStorage)
   $('#btn-toggle-mode')?.addEventListener('click', toggleUiMode);
   applyUiMode();
+
+  // Install Tab Listeners
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  const tabPanels = document.querySelectorAll('.tab-panel');
+  if (tabBtns.length) {
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabBtns.forEach(b => {
+          b.classList.remove('active');
+          if (b.classList.contains('text-indigo-400')) {
+            b.classList.remove('text-indigo-400', 'border-indigo-500');
+          }
+        });
+        tabPanels.forEach(p => p.classList.add('hidden'));
+
+        btn.classList.add('active');
+        btn.classList.add('text-indigo-400', 'border-indigo-500');
+
+        const targetId = btn.getAttribute('data-target');
+        const targetPanel = document.getElementById(targetId);
+        if (targetPanel) {
+          targetPanel.classList.remove('hidden');
+        }
+      });
+    });
+  }
 
   // Health
   setInterval(checkHealth, 6000);
@@ -1375,6 +1665,58 @@ function wireUi() {
     // Keep manual redaction overlay aligned if the viewport size changes.
     renderManualBoxesOnPage();
   });
+
+  // Track mouse for card glow effect
+  document.addEventListener('mousemove', (e) => {
+    for (const card of document.querySelectorAll('.card')) {
+      const rect = card.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      card.style.setProperty('--mouse-x', `${x}px`);
+      card.style.setProperty('--mouse-y', `${y}px`);
+    }
+  });
+
+  $('#btn-demo-mode')?.addEventListener('click', async () => {
+    try {
+      const btn = $('#btn-demo-mode');
+      if (btn) btn.disabled = true;
+      toast('success', 'Loading demo', 'Fetching sample document...');
+      const res = await fetch('assets/2pagedoc.pdf');
+      if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to load sample`);
+      const blob = await res.blob();
+      const file = new File([blob], 'Filled_In_Employement_Application.pdf', { type: 'application/pdf' });
+      setFile(file);
+      setTimeout(() => { $('#btn-analyze')?.click(); }, 500);
+    } catch (e) {
+      toast('error', 'Demo failed', String(e?.message || e));
+    } finally {
+      const btn = $('#btn-demo-mode');
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  // Tabs logic
+  const tabNav = document.getElementById('report-tabs');
+  if (tabNav) {
+    tabNav.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab-btn');
+      if (!btn) return;
+      const targetId = btn.getAttribute('data-target');
+      if (!targetId) return;
+
+      // Update buttons
+      tabNav.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Update panels
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active', 'hidden'));
+      const activePanel = document.getElementById(targetId);
+      if (activePanel) {
+        activePanel.classList.add('active');
+      }
+    });
+  }
 
   // Initialize
   resetRunUi();

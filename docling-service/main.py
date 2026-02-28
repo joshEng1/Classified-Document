@@ -1118,3 +1118,16 @@ def health():
     docling_pipeline = os.getenv("DOCLING_PIPELINE", "standard")
     docling_flag = DOCILING_AVAILABLE or CLI_AVAILABLE
     return {"ok": True, "docling": docling_flag, "cli": CLI_AVAILABLE, "extract_pipeline": extract_pipeline, "docling_pipeline": docling_pipeline}
+
+@app.get("/")
+def root():
+    return {
+        "ok": True,
+        "service": "docling-compatible-extractor",
+        "health": "/health",
+        "endpoints": ["/extract", "/signals", "/render-pages", "/render-regions", "/redact"],
+    }
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)

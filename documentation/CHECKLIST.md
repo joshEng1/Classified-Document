@@ -9,6 +9,11 @@ Use this checklist to get a clean local environment and verify the system end-to
 - [ ] Node.js 18+ (`node --version`)
 - [ ] Docker Desktop (`docker --version`) and running
 - [ ] Git (recommended)
+- [ ] Granite-docling-258M-BF16.gguf huggingFace Link: https://huggingface.co/ibm-granite/granite-docling-258M-GGUF
+- [ ] granite-guardian-3.2-3b-a800m-Q6_K.gguf huggingFace Link: https://huggingface.co/ibm-research/granite-guardian-3.2-3b-a800m-GGUF
+- [ ] granite-vision-3.2-2b-Q5_K_M.gguf huggingFace Link: https://huggingface.co/ibm-research/granite-vision-3.2-2b-GGUF
+- [ ] mmproj-model-f16.gguf huggingFace Link: https://huggingface.co/ibm-research/granite-vision-3.2-2b-GGUF
+- [ ] QWEN3-0.6B-q4_k_m.gguf huggingFace Link: https://huggingface.co/enacimie/Qwen3-0.6B-Q4_K_M-GGUF/tree/main 
 
 ## Repo Setup
 

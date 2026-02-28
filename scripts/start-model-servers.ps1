@@ -22,7 +22,7 @@ param(
   [string]$VisionModelFile = "granite-vision-3.2-2b-Q5_K_M.gguf",
   [string]$VisionMmprojFile = "mmproj-model-f16.gguf",
   [string]$GuardianModelFile = "granite-guardian-3.2-3b-a800m-Q6_K.gguf",
-  [string]$SlmModelFile = "Qwen3-0.6B-Q8_0.gguf",
+  [string]$SlmModelFile = "QWEN3-0.6B-q4_k_m.gguf",
 
   [int]$LlmCtx = 8192,
   [int]$VisionCtx = 8192,

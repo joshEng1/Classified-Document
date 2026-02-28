@@ -1,9 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { extractWithDocling } from './doclingAdapter.js';
+import { extractWithPdfParse } from './pdfText.js';
 import { buildEvidence } from './selectors.js';
 import { mapCitations } from '../citations.js';
 import { augmentWithVision } from './visionRouting.js';
+import { quickDetectImagesWithCloudVision } from '../google/cloudVisionClient.js';
+import { extractTextWithAzureDocumentIntelligence } from '../azure/documentIntelligenceClient.js';
+import { safeErrorDetail } from '../../util/security.js';
 
 function basicLegibility({ text, numPages }) {
   const charCount = (text || '').length;
@@ -15,16 +19,30 @@ function basicLegibility({ text, numPages }) {
   };
 }
 
-export async function extractDocument({ filePath, originalName, providedText, preferDocling = true, disableVision = false }) {
+export async function extractDocument({
+  filePath,
+  originalName,
+  providedText,
+  preferDocling = true,
+  disableVision = false,
+  onlineVisionOnly = false,
+}) {
   let meta = { pages: 0, images: 0, source: 'unknown', originalName };
   let text = '';
-  let ocrText = '';
   let raw = null;
   let blocks = [];  // Add blocks for page-level PII detection
-  let multimodal = { vision: null, redaction_boxes: [], page_signals: [] };
+  let multimodal = {
+    vision: null,
+    redaction_boxes: [],
+    page_signals: [],
+    google: {
+      cloud_vision_quick: null,
+    },
+  };
   let used = 'none';
   const status = [];
-  const noVision = Boolean(disableVision);
+  const userSaysNoImages = Boolean(disableVision);
+  let forceDoclingFallback = false;
   function mark(phase, extra) {
     try { status.push({ phase, at: new Date().toISOString(), ...(extra || {}) }); } catch { }
   }
@@ -39,22 +57,99 @@ export async function extractDocument({ filePath, originalName, providedText, pr
     } catch { }
   }
 
-  // 1) Docling (required) for structured text
-  if (preferDocling && filePath) {
-    const dl = await extractWithDocling({ filePath });
-    if (!dl || !dl.text) {
-      throw new Error('docling_required_failed');
+  let quickVision = { enabled: false, has_images: false, reason: 'not_applicable', sampled_pages: [], detections: [] };
+  const isPdf = filePath && isProbablyPdf({ filePath, originalName });
+  if (isPdf && !onlineVisionOnly) {
+    if (userSaysNoImages) {
+      quickVision = { enabled: false, has_images: false, reason: 'user_no_images', sampled_pages: [], detections: [] };
+      mark('cloud_vision_quick_skip', { reason: 'user_no_images' });
+    } else {
+      try {
+        quickVision = await quickDetectImagesWithCloudVision({ filePath });
+        mark('cloud_vision_quick_done', {
+          enabled: quickVision.enabled,
+          has_images: quickVision.has_images,
+          sampled_pages: (quickVision.sampled_pages || []).length,
+          reason: quickVision.reason || 'ok',
+        });
+      } catch (e) {
+        quickVision = { enabled: false, has_images: false, reason: 'cloud_vision_error', sampled_pages: [], detections: [] };
+        mark('cloud_vision_quick_error', { error: safeErrorDetail(e) });
+      }
     }
-    text = dl.text;
-    meta = { ...meta, ...dl.meta, source: 'docling' };
-    raw = dl.raw;
-    blocks = dl.blocks || [];  // Get blocks with page info
-    used = 'docling';
-    mark('docling_ok', { pages: meta.pages });
+  }
+  multimodal.google.cloud_vision_quick = quickVision;
+
+  // 1) Online-only extraction path: Azure Document Intelligence OCR (no Docling dependency)
+  if (onlineVisionOnly && filePath && isPdf) {
+    mark('azure_di_ocr_start');
+    const azure = await extractTextWithAzureDocumentIntelligence({
+      filePath,
+    });
+    if (!azure || !azure.text) {
+      const code = String(azure?.error || 'azure_di_required_failed').trim() || 'azure_di_required_failed';
+      mark('azure_di_ocr_error', { error: safeErrorDetail(code) });
+
+      // If Azure DI is not configured, degrade gracefully to Docling/pdf-parse instead of hard-failing.
+      // This prevents a misconfigured cloud deployment from bricking the demo UI.
+      if (code === 'azure_di_missing_endpoint' || code === 'azure_di_missing_key') {
+        forceDoclingFallback = true;
+        mark('azure_di_ocr_fallback', { reason: code });
+      } else {
+        throw new Error(code);
+      }
+    } else {
+      text = azure.text;
+      meta = { ...meta, ...azure.meta, source: 'azure_document_intelligence' };
+      raw = azure.raw;
+      blocks = azure.blocks || [];
+      used = 'azure_document_intelligence';
+      if (azure?.notice?.code === 'azure_di_page_cap_notice') {
+        mark('azure_di_page_cap_notice', { detail: String(azure?.notice?.detail || '') });
+      }
+      multimodal.google.cloud_vision_quick = {
+        enabled: false,
+        has_images: null,
+        reason: 'online_azure_di_only',
+        sampled_pages: [],
+        detections: [],
+      };
+      mark('azure_di_ocr_ok', { pages: meta.pages, text_len: text.length });
+    }
   }
 
-  // 1b) Hybrid multimodal routing: only for PDFs, only for figure-heavy pages
-  if (!noVision && filePath && isProbablyPdf({ filePath, originalName })) {
+  // 2) Local/offline extraction path: Docling first, pdf-parse fallback
+  if ((!onlineVisionOnly || forceDoclingFallback) && filePath && (preferDocling || forceDoclingFallback)) {
+    const dl = await extractWithDocling({ filePath });
+    if (!dl || !dl.text) {
+      const parsed = await extractWithPdfParse({ filePath }).catch(() => null);
+      if (!parsed || !parsed.text) throw new Error('docling_required_failed');
+      text = parsed.text;
+      meta = { ...meta, ...parsed.meta, source: 'pdf_parse' };
+      raw = parsed;
+      blocks = [];
+      used = 'pdf_parse';
+      mark('pdf_parse_fallback_ok', { pages: meta.pages, text_len: text.length });
+    } else {
+      text = dl.text;
+      meta = { ...meta, ...dl.meta, source: 'docling' };
+      raw = dl.raw;
+      blocks = dl.blocks || [];  // Get blocks with page info
+      used = 'docling';
+      mark('docling_ok', { pages: meta.pages });
+    }
+  }
+
+  // Vision-only mode: Cloud Vision quick scan is retained for local/offline mode only.
+  if (isPdf && !onlineVisionOnly) {
+    const reason = userSaysNoImages
+      ? 'user_no_images'
+      : (quickVision?.enabled ? (quickVision?.has_images ? 'images_detected' : 'cloud_vision_no_images') : 'cloud_vision_unavailable');
+    mark('cloud_vision_decision', { reason });
+  }
+
+  // 3) Hybrid multimodal routing (local/offline only)
+  if (!onlineVisionOnly && !userSaysNoImages && filePath && isPdf) {
     try {
       const vision = await augmentWithVision({ filePath, blocks, meta });
       multimodal = {
@@ -65,6 +160,7 @@ export async function extractDocument({ filePath, originalName, providedText, pr
         },
         redaction_boxes: vision.redaction_boxes || [],
         page_signals: vision.page_signals || [],
+        google: multimodal.google,
       };
 
       if (vision?.markdown) {
@@ -77,21 +173,17 @@ export async function extractDocument({ filePath, originalName, providedText, pr
         mark('vision_supplement_skip', { reason: (vision?.enabled ? 'no_routed_pages' : 'disabled') });
       }
     } catch (e) {
-      mark('vision_supplement_error', { error: String(e?.message || e) });
+      mark('vision_supplement_error', { error: safeErrorDetail(e) });
     }
   }
 
-  // 2) No OCR/pdf-parse fallbacks here; Docling CLI handles OCR internally via --ocr.
-
-  // 3) Provided text (debug/testing) only when no file path
+  // 4) Provided text (debug/testing) only when no file path
   if (!filePath && providedText) {
     text = providedText;
     meta = { ...meta, source: 'provided' };
     used = 'provided';
     mark('provided_text');
   }
-
-  // 4) No pdf-parse fallback
 
   // 5) Legibility assessment
   const leg = basicLegibility({ text, numPages: meta.pages || 0 });

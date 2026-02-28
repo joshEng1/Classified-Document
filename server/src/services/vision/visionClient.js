@@ -5,6 +5,7 @@
 // - The caller can decide whether to proceed without vision.
 
 import axios from 'axios';
+import { safeErrorDetail } from '../../util/security.js';
 
 const DEFAULT_PROMPT = [
   'You are analyzing a cropped document region (a figure/diagram/table) from a PDF.',
@@ -117,6 +118,8 @@ export async function analyzeVisionImage({ imageBase64, prompt, baseUrl }) {
         : (typeof data === 'object' && data)
           ? JSON.stringify(data)
           : String(e?.message || '');
+    const safeDetail = safeErrorDetail(detail);
+    const safeMessage = safeErrorDetail(message, 'vision_request_failed');
     return {
       extracted_text: '',
       summary: '',
@@ -125,8 +128,8 @@ export async function analyzeVisionImage({ imageBase64, prompt, baseUrl }) {
       rationale: '',
       error: 'vision_request_failed',
       status,
-      detail: String(message).slice(0, 300),
-      detail_raw: String(detail).slice(0, 600),
+      detail: safeMessage.slice(0, 300),
+      detail_raw: safeDetail.slice(0, 600),
     };
   }
 }

@@ -1,0 +1,80 @@
+services:
+  - type: web
+    name: doc-analyzer-docling
+    runtime: docker
+    rootDir: docling-service
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+
+  - type: web
+    name: doc-analyzer-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: MAX_UPLOAD_MB
+        value: "5"
+      - key: MODEL_MODE_DEFAULT
+        value: online
+      - key: ONLINE_PROVIDER
+        value: gemini
+      - key: OFFLINE_MODE
+        value: "false"
+      - key: LOCAL_CLASSIFIER
+        value: heuristic
+      - key: VERIFY_SECOND_PASS
+        value: "true"
+      - key: API_NO_STORE
+        value: "true"
+      - key: VERBOSE_SERVER_LOGS
+        value: "false"
+      - key: PUBLIC_API_RATE_LIMIT_ENABLED
+        value: "true"
+      - key: PUBLIC_API_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: PUBLIC_API_RATE_LIMIT_MAX_REQUESTS
+        value: "3"
+      - key: PUBLIC_API_RATE_LIMIT_PATHS
+        value: /api/process,/api/process-stream,/api/process-batch
+      - key: CORS_ALLOW_ALL
+        value: "false"
+      - key: CORS_ALLOW_NULL
+        value: "false"
+      - key: CORS_ORIGINS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_SUMMARY_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_MODERATION_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_PII_MODEL
+        value: gemini-3-flash-preview
+      - key: AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+        sync: false
+      - key: AZURE_DOCUMENT_INTELLIGENCE_KEY
+        sync: false
+      - key: AZURE_DOCUMENT_INTELLIGENCE_MODEL
+        value: prebuilt-read
+      - key: AZURE_DOCUMENT_INTELLIGENCE_API_VERSION
+        value: 2024-11-30
+      - key: AZURE_DOCUMENT_INTELLIGENCE_TIMEOUT_MS
+        value: "120000"
+      - key: AZURE_DOCUMENT_INTELLIGENCE_POLL_INTERVAL_MS
+        value: "1200"
+      - key: AZURE_DOCUMENT_INTELLIGENCE_MAX_PAGES
+        value: "5"
+      - key: DOCLING_URL
+        value: https://doc-analyzer-docling.onrender.com
+      - key: REDACT_ENGINE
+        value: native
+      - key: NATIVE_REDACT_FALLBACK
+        value: "true"
