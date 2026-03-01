@@ -40,7 +40,7 @@ jobs:
         working-directory: server
         run: npm ci
 
-      - name: Lint script (if configured)
+      - name: Lint script
         working-directory: server
         run: npm run lint --if-present
 
