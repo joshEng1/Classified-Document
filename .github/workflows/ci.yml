@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - ".github/workflows/**"
+      - "README.md"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "server/**"
+      - ".github/workflows/**"
+      - "README.md"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-server:
+    name: Validate server
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Lint script (if configured)
+        working-directory: server
+        run: npm run lint --if-present
+
+      - name: Syntax check JavaScript files
+        working-directory: server
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find src scripts -type f -name "*.js" -print0)
+
+      - name: Boot smoke test (/health)
+        working-directory: server
+        run: |
+          set -euo pipefail
+          PORT=5055 OFFLINE_MODE=true LOCAL_CLASSIFIER=heuristic REDACT_ENGINE=native NATIVE_REDACT_FALLBACK=true node src/index.js > server.log 2>&1 &
+          pid=$!
+          cleanup() {
+            kill "$pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 45); do
+            if curl -fsS "http://127.0.0.1:5055/health" > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Health check failed after 45s"
+          cat server.log
+          exit 1
